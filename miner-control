@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Control one peakminer unit. The panel's only privileged entry point.
+
+The panel never builds a systemctl command itself: it calls
+
+    miner-control <start|stop|restart|status> <host> <unit>
+
+and this script resolves the host, checks the unit against the fleet
+definition, and runs systemctl locally or over ssh. Refusing an unknown
+host/unit pair keeps a bad panel binding from reaching systemctl at all.
+
+Forge runs transient units via systemd-run. These units are NOT persistent
+files — `systemctl start` fails after a stop because the unit is gone. For
+transient units, start uses `systemd-run` to (re)create them with self-healing
+properties baked in.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fleet import FLEET  # noqa: E402
+
+ACTIONS = ("start", "stop", "restart", "status")
+SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+
+
+def fail(message, code=1):
+    print(json.dumps({"ok": False, "error": message}))
+    sys.exit(code)
+
+
+def build_command(host, unit, action):
+    config = FLEET.get(host)
+    if not config:
+        fail(f"Unknown host: {host}")
+
+    known = {miner["unit"] for miner in config["miners"]}
+    if unit not in known:
+        fail(f"Unknown unit for {host}: {unit}")
+
+    is_windows = config.get("platform") == "windows"
+    is_transient = config.get("transient") and action == "start"
+
+    if is_windows:
+        # Windows NSSM services: nssm <action> <service>
+        # NSSM actions: start, stop, restart, status
+        if action == "status":
+            remote = ["cmd", "/c", f"nssm status {unit}"]
+        else:
+            remote = ["cmd", "/c", f"nssm {action} {unit}"]
+    elif is_transient:
+        # Transient forge unit: (re)create via systemd-run with self-healing.
+        # The imp.sh script has a while-loop, so Restart=always is a backstop
+        # for the script itself, not the miner binary.
+        miner = None
+        for m in config["miners"]:
+            if m["unit"] == unit:
+                miner = m
+                break
+        if not miner:
+            fail(f"Transient unit not found: {unit}")
+        remote = [
+            "systemd-run",
+            "--unit=" + unit,
+            "--description=peakminer-dropin",
+            "--property=Conflicts=" + miner.get("conflicts", ""),
+            "--property=After=network-online.target",
+            "--property=Type=simple",
+            "--property=User=root",
+            "--property=Restart=always",
+            "--property=RestartSec=5",
+            "--property=Environment=PATH=/run/current-system/sw/bin:/usr/bin:/bin",
+            miner["script"],
+        ]
+    else:
+        # No sudo. A bar-panel click has no terminal to type a password into, so
+        # `sudo systemctl` hangs until the timeout and the miner never moves — the
+        # exact failure this replaced. Bare systemctl goes through polkit, which
+        # authorizes an active local session interactively via the shell's polkit
+        # agent, and systemd's own manage-units action covers start/stop/restart.
+        if action == "status":
+            remote = ["systemctl", "is-active", unit]
+        else:
+            remote = ["systemctl", action, unit]
+
+    if config.get("local"):
+        return remote
+    # Remote hosts have no local session to authorize against, so they do need
+    # sudo. Target the ssh ALIAS, not the IP: ~/.ssh/config maps the aliases to
+    # the touchless key, while the raw IP falls through to `Host *` and fails
+    # with "Permission denied (publickey)".
+    target = config.get("ssh") or f"{config['user']}@{config['ip']}"
+    if is_windows:
+        return ["ssh", *SSH_OPTIONS, target, " ".join(remote)]
+    if action == "status":
+        return ["ssh", *SSH_OPTIONS, target, " ".join(remote)]
+    return ["ssh", *SSH_OPTIONS, target, "sudo " + " ".join(remote)]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=ACTIONS)
+    parser.add_argument("host")
+    parser.add_argument("unit")
+    args = parser.parse_args()
+
+    config = FLEET.get(args.host)
+    if not config:
+        fail(f"Unknown host: {args.host}")
+
+    is_windows = config.get("platform") == "windows"
+
+    if is_windows:
+        unit = args.unit  # NSSM service names have no .service suffix
+    else:
+        unit = args.unit if args.unit.endswith(".service") else f"{args.unit}.service"
+    command = build_command(args.host, unit, args.action)
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        fail(f"Timed out running {args.action} on {args.host}")
+    except FileNotFoundError as error:
+        fail(str(error))
+
+    output = (completed.stdout or "").strip()
+    error = (completed.stderr or "").strip()
+
+    # `is-active` exits non-zero for a stopped unit, which is an answer rather
+    # than a failure. Every other action treats a non-zero exit as an error.
+    ok = completed.returncode == 0 or args.action == "status"
+
+    print(json.dumps({
+        "ok": ok,
+        "action": args.action,
+        "host": args.host,
+        "unit": unit,
+        "state": output,
+        "error": "" if ok else (error or f"exit {completed.returncode}"),
+    }))
+    sys.exit(0 if ok else completed.returncode)
+
+
+if __name__ == "__main__":
+    main()

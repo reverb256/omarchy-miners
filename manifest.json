@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jkro.miners",
+  "name": "Miners",
+  "version": "2.0.0",
+  "author": "j_kro",
+  "license": "MIT",
+  "description": "Fleet-wide GPU miner monitoring in the Omarchy bar: total hashrate on the bar plus a panel with per-GPU hashrate, power, temperature, and pause/resume for every miner on every host.",
+  "homepage": "https://github.com/reverb256/omarchy-miners",
+  "repository": "https://github.com/reverb256/omarchy-miners",
+  "keywords": ["mining", "gpu", "hashrate", "peakminer", "fleet", "nvidia"],
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Miners",
+    "description": "Total hashrate, power, and active GPU count across the mining fleet.",
+    "category": "System",
+    "aliases": ["miners", "mining"],
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "refreshIntervalSec": 10,
+      "barDisplay": "Hashrate",
+      "tempWarnC": 70,
+      "tempAlarmC": 80
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "description": "How often every miner's /summary endpoint is polled.",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 10
+      },
+      {
+        "key": "barDisplay",
+        "type": "enum",
+        "label": "What to show on the bar",
+        "options": ["Hashrate", "Hashrate and power", "Icon only"],
+        "defaultValue": "Hashrate"
+      },
+      {
+        "key": "tempWarnC",
+        "type": "integer",
+        "label": "Warn above (°C)",
+        "min": 40,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 70
+      },
+      {
+        "key": "tempAlarmC",
+        "type": "integer",
+        "label": "Alarm above (°C)",
+        "min": 40,
+        "max": 110,
+        "step": 1,
+        "defaultValue": 80
+      }
+    ]
+  }
+}
