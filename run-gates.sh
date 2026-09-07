@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the miners plugin gates. Kept as a file: the inline form trips the
 # agent's command-payload limit.
-cd ~/.config/omarchy/plugins/io.github.jkro.miners || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 rm -rf __pycache__
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export WAYLAND_DISPLAY=wayland-1

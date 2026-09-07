@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Dev/editor
+.vscode/
+.idea/
+*.swp
+
+# Local state
+*.orig
+*.bak
+
+# Marketplace dev junk
+.gstack/
+.wrangler/
+.agents/
+.claude/
+.claude-ai/
+.claude-labs/

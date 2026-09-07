@@ -45,3 +45,16 @@ The fleet is defined in `fleet.py` — one source of truth for the panel and CLI
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Removing
+
+To uninstall:
+
+```bash
+omarchy plugin remove io.github.jkro.miners
+```
+
+What remains after removal:
+- **Kept**: None. The plugin registers no keyring entries, systemd units, sudoers rules, or persistent daemons. It only reads miner state; it does not write state files.
+- **Removed with the plugin**: the bar widget, panel, and helper scripts. No hooks are left behind in `theme-set.d/` (this plugin does not install any).
+- **Persists**: The miners themselves and their systemd/NSSM units are owned by the hosts — the plugin only queries and controls them, so they keep running untouched. Your `~/.ssh/config` aliases (`zephyr`, `nexus`, `forge`, `krash2`) used for remote control are not modified by this plugin.
