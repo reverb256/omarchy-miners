@@ -44,6 +44,7 @@ Item {
     // Nerd Font outlines can paint above the box Text reserves, and a bold
     // small-caps label at the top of a clipping Flickable loses the overshoot.
     topPadding: Math.ceil(Style.font.caption * 0.15)
+  textFormat: Text.PlainText
   }
 
   Text {
@@ -61,5 +62,6 @@ Item {
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
     font.bold: true
+  textFormat: Text.PlainText
   }
 }

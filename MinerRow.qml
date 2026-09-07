@@ -88,6 +88,7 @@ Item {
           font.pixelSize: Style.font.bodySmall
           font.bold: true
           elide: Text.ElideRight
+        textFormat: Text.PlainText
         }
 
         Text {
@@ -97,6 +98,7 @@ Item {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
+        textFormat: Text.PlainText
         }
       }
 
@@ -111,6 +113,7 @@ Item {
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         font.bold: true
+      textFormat: Text.PlainText
       }
 
       Button {
@@ -148,6 +151,7 @@ Item {
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+      textFormat: Text.PlainText
       }
 
       Text {
@@ -161,6 +165,7 @@ Item {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
+      textFormat: Text.PlainText
       }
     }
 
@@ -206,6 +211,7 @@ Item {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: root.tempWarning || root.tempAlarming
+      textFormat: Text.PlainText
       }
 
       Text {
@@ -224,6 +230,7 @@ Item {
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+      textFormat: Text.PlainText
       }
     }
   }

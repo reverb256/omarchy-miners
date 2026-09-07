@@ -28,6 +28,7 @@ Item {
     color: root.dim
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
+  textFormat: Text.PlainText
   }
 
   Text {
@@ -39,5 +40,6 @@ Item {
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
     font.bold: true
+  textFormat: Text.PlainText
   }
 }

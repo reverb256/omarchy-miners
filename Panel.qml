@@ -213,6 +213,7 @@ Panel {
                 color: root.alarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
+              textFormat: Text.PlainText
               }
             }
           }
@@ -249,6 +250,7 @@ Panel {
             font.pixelSize: Style.font.body
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
           }
 
           PanelSeparator {
@@ -315,6 +317,7 @@ Panel {
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
+          textFormat: Text.PlainText
           }
         }
       }

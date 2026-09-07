@@ -28,5 +28,6 @@ BorderSurface {
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
     wrapMode: Text.WordWrap
+  textFormat: Text.PlainText
   }
 }
