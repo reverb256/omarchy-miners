@@ -9,10 +9,7 @@ and this script resolves the host, checks the unit against the fleet
 definition, and runs systemctl locally or over ssh. Refusing an unknown
 host/unit pair keeps a bad panel binding from reaching systemctl at all.
 
-Forge runs transient units via systemd-run. These units are NOT persistent
-files — `systemctl start` fails after a stop because the unit is gone. For
-transient units, start uses `systemd-run` to (re)create them with self-healing
-properties baked in.
+Forge runs standard persistent units — no transient drop-ins, no systemd-run.
 """
 
 from __future__ import annotations
@@ -46,7 +43,6 @@ def build_command(host, unit, action):
         fail(f"Unknown unit for {host}: {unit}")
 
     is_windows = config.get("platform") == "windows"
-    is_transient = config.get("transient") and action == "start"
 
     if is_windows:
         # Windows NSSM services: nssm <action> <service>
@@ -55,36 +51,7 @@ def build_command(host, unit, action):
             remote = ["cmd", "/c", f"nssm status {unit}"]
         else:
             remote = ["cmd", "/c", f"nssm {action} {unit}"]
-    elif is_transient:
-        # Transient forge unit: (re)create via systemd-run with self-healing.
-        # The imp.sh script has a while-loop, so Restart=always is a backstop
-        # for the script itself, not the miner binary.
-        miner = None
-        for m in config["miners"]:
-            if m["unit"] == unit:
-                miner = m
-                break
-        if not miner:
-            fail(f"Transient unit not found: {unit}")
-        remote = [
-            "systemd-run",
-            "--unit=" + unit,
-            "--description=peakminer-dropin",
-            "--property=Conflicts=" + miner.get("conflicts", ""),
-            "--property=After=network-online.target",
-            "--property=Type=simple",
-            "--property=User=root",
-            "--property=Restart=always",
-            "--property=RestartSec=5",
-            "--property=Environment=PATH=/run/current-system/sw/bin:/usr/bin:/bin",
-            miner["script"],
-        ]
     else:
-        # No sudo. A bar-panel click has no terminal to type a password into, so
-        # `sudo systemctl` hangs until the timeout and the miner never moves — the
-        # exact failure this replaced. Bare systemctl goes through polkit, which
-        # authorizes an active local session interactively via the shell's polkit
-        # agent, and systemd's own manage-units action covers start/stop/restart.
         if action == "status":
             remote = ["systemctl", "is-active", unit]
         else:

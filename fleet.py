@@ -14,11 +14,8 @@ Unit names are DATA, never derived. Each host names its miners its own way:
   krash2  Windows 11, NSSM service (krash2 SSH alias, user 'krash')
           -> pearlhash (NSSM service name)
 
-Forge units are TRANSIENT — they are created via `systemd-run`, not as
-persistent unit files. This means:
-  - `systemctl start` FAILS after a stop (the unit is gone).
-  - miner-control must use `systemd-run` to (re)start them.
-  - They self-heal via `Restart=always` baked into the systemd-run properties.
+Forge runs PERSISTENT units — standard systemctl-managed service files.
+The old transient drop-in path (systemd-run + imp.sh scripts) is dead.
 
 Deriving a unit from the API port (what this plugin used to do) matched no
 unit on any host, so every pause silently did nothing. Verify a name against
@@ -76,25 +73,21 @@ FLEET = {
         "ssh": "forge",
         "local": False,
         "user": "j_kro",
-        # Transient units: created via systemd-run, not as persistent files.
-        # miner-control uses systemd-run to start, systemctl to stop.
-        "transient": True,
+        # Persistent units: peakminer-forge-4060-0/1.service (NOT transient dropins).
+        # The old transient imp.sh + systemd-run path is dead; these are standard
+        # systemctl-managed units now.
         "miners": [
             {
                 "port": 21550,
-                "unit": "peakminer-dropin-forge-4060-0.service",
+                "unit": "peakminer-forge-4060-0.service",
                 "label": "RTX 4060 #1",
                 "powerLimit": 118,
-                "script": "/home/j_kro/forge-4060-0-imp.sh",
-                "conflicts": "peakminer-forge-4060-0.service",
             },
             {
                 "port": 21552,
-                "unit": "peakminer-dropin-forge-4060-1.service",
+                "unit": "peakminer-forge-4060-1.service",
                 "label": "RTX 4060 #2",
-                "powerLimit": 118,
-                "script": "/home/j_kro/forge-4060-1-imp.sh",
-                "conflicts": "peakminer-forge-4060-1.service",
+                "powerLimit": 115,
             },
         ],
     },
