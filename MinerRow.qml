@@ -26,6 +26,9 @@ Item {
   // Fully formatted by Panel (e.g. "$1.15/day"), empty when unknown — number
   // formatting stays in one place, the same split the poller uses.
   property string earningsText: ""
+  // Extra full-width lines under the row (the krash3 xmrig readout). Empty
+  // for peakminer rows.
+  property var infoLines: []
 
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property bool online: !!miner && miner.online === true
@@ -236,15 +239,36 @@ Item {
           if (fan > 0) parts.push("fan " + fan.toFixed(0) + "%")
           if (util > 0) parts.push("util " + util.toFixed(0) + "%")
           if (root.online && root.earningsText !== "") parts.push(root.earningsText)
-          // The Kryptex app rig also runs xmrig; both rates belong to the row.
-          var xmr = Number(root.miner.xmrigHashrate || 0)
-          if (root.online && xmr > 0) parts.push(root.miner.xmrigText + " XMR")
+          // The XMR side gets its own full-width line — see infoLines.
           return parts.join("  ·  ")
         }
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
       textFormat: Text.PlainText
+      }
+    }
+
+    // ---- Extra info lines (e.g. the xmrig readout on the Kryptex rig) ---
+    Column {
+      width: parent.width
+      visible: root.infoLines.length > 0
+      spacing: Style.space(1)
+
+      Repeater {
+        model: root.infoLines
+
+        Text {
+          required property var modelData
+
+          width: parent.width
+          text: String(modelData)
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+        }
       }
     }
   }

@@ -206,6 +206,10 @@ def query_kryptex_rig(config):
     target = config.get("ssh") or f"{config['user']}@{config['ip']}"
     xmr_hashrate = 0.0
     xmr_shares = 0
+    xmr_shares_total = 0
+    xmr_algo = ""
+    xmr_pool = ""
+    xmr_cpu = ""
     power = 0.0
     utilization = 100.0 if prl_hashrate > 0 else 0.0
     try:
@@ -222,7 +226,14 @@ def query_kryptex_rig(config):
             totals = (xmrig.get("hashrate") or {}).get("total") or []
             if len(totals) >= 2:
                 xmr_hashrate = number(totals[1])  # 60-second average
-            xmr_shares = number((xmrig.get("results") or {}).get("shares_good"))
+            results = xmrig.get("results") or {}
+            xmr_shares = number(results.get("shares_good"))
+            xmr_shares_total = number(results.get("shares_total"))
+            xmr_algo = str(xmrig.get("algo") or "")
+            xmr_pool = str((xmrig.get("connection") or {}).get("pool") or "")
+            cpu_brand = str((xmrig.get("cpu") or {}).get("brand") or "").replace(" Processor", "")
+            # "AMD Ryzen 9 5900X 12-Core Processor" -> "AMD Ryzen 9 5900X"
+            xmr_cpu = " ".join(part for part in cpu_brand.split() if not part.endswith("-Core"))
         except (json.JSONDecodeError, ValueError):
             pass
         powers = parse_nvidia_power(nvidia_part)
@@ -250,9 +261,13 @@ def query_kryptex_rig(config):
                     "power_w": power,
                 }
             ],
-            # Passed through to the record for the XMR line in the panel.
+            # Passed through to the record for the xmrig readout in the panel.
             "xmrigHashrate": xmr_hashrate,
             "xmrigShares": xmr_shares,
+            "xmrigSharesTotal": xmr_shares_total,
+            "xmrigAlgo": xmr_algo,
+            "xmrigPool": xmr_pool,
+            "xmrigCpu": xmr_cpu,
         }
     }
 
@@ -434,6 +449,10 @@ def poll_fleet():
             record["controllable"] = config.get("control") != "none"
             record["xmrigHashrate"] = number((summary or {}).get("xmrigHashrate"))
             record["xmrigShares"] = number((summary or {}).get("xmrigShares"))
+            record["xmrigSharesTotal"] = number((summary or {}).get("xmrigSharesTotal"))
+            record["xmrigAlgo"] = (summary or {}).get("xmrigAlgo", "")
+            record["xmrigPool"] = (summary or {}).get("xmrigPool", "")
+            record["xmrigCpu"] = (summary or {}).get("xmrigCpu", "")
             miners.append(record)
 
             if online:

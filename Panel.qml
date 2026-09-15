@@ -359,6 +359,16 @@ Panel {
                   earningsText: root.fleet && root.fleet.revenueReady && modelData.online
                     ? Format.formatFiat(root.fleet.earningsDayFiat(modelData.hashrate), root.fleet.revenueCurrency) + "/day"
                     : ""
+                  infoLines: root.fleet && modelData.online && Number(modelData.xmrigHashrate || 0) > 0
+                    ? [
+                        ("XMR " + modelData.xmrigText
+                          + "  ·  " + Math.round(Number(modelData.xmrigShares || 0))
+                          + "/" + Math.round(Number(modelData.xmrigSharesTotal || 0)) + " shares"
+                          + (modelData.xmrigAlgo ? "  ·  " + modelData.xmrigAlgo : "")),
+                        [String(modelData.xmrigPool || ""),
+                         String(modelData.xmrigCpu || "")].filter(function(part) { return part !== ""; }).join("  ·  "),
+                      ].filter(function(line) { return line !== ""; })
+                    : []
                   onToggleRequested: if (root.fleet) root.fleet.toggle(modelData)
                 }
               }

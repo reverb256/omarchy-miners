@@ -28,7 +28,8 @@ The fleet is defined in `fleet.py` — one source of truth for the panel and CLI
 
 The krash3 row is read-only: its numbers come from the Kryptex app's bundled
 SRBMiner API (PRL), xmrig API (XMR) and nvidia-smi. There is no unit to pause,
-so the panel hides its control.
+so the panel hides its control. The xmrig readout is shown under the row:
+XMR hashrate, accepted shares, algorithm, pool and CPU.
 
 ### Earnings estimate
 
