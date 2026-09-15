@@ -40,7 +40,12 @@ printf 'G12 in shell.json          : '
 grep -c io.github.jkro.miners ~/.config/omarchy/shell.json
 
 printf 'G13 shell discovers it     : '
-quickshell ipc -p /usr/share/omarchy/shell call shell listPlugins 2>/dev/null |
+# Target the RUNNING shell's config path: this box runs a custom clone
+# (~/omarchy/shell), not /usr/share/omarchy/shell. Fall back to the stock
+# path only when no running instance is found.
+QS_PATH=$(pgrep -a quickshell 2>/dev/null | sed -n 's/.*-p \([^ ]*\).*/\1/p' | head -1)
+[ -z "$QS_PATH" ] && QS_PATH=/usr/share/omarchy/shell
+quickshell ipc -p "$QS_PATH" call shell listPlugins 2>/dev/null |
   grep -c io.github.jkro.miners
 
 printf 'G15 zephyr 3060ti          : '
@@ -48,3 +53,11 @@ systemctl is-active peakminer-3060ti.service
 
 printf 'G16 zephyr 3090            : '
 systemctl is-active peakminer-3090.service
+
+printf 'G17 forge 4060-0           : '
+python3 ./miner-control status forge peakminer-forge-4060-0.service |
+  python3 -c "import sys,json;print(json.load(sys.stdin)['ok'])"
+
+printf 'G18 forge 4060-1           : '
+python3 ./miner-control status forge peakminer-forge-4060-1.service |
+  python3 -c "import sys,json;print(json.load(sys.stdin)['ok'])"

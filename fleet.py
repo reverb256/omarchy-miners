@@ -8,9 +8,13 @@ Unit names are DATA, never derived. Each host names its miners its own way:
           -> peakminer-3060ti.service, peakminer-3090.service
   nexus   Omarchy (converted from NixOS). Hand-managed unit.
           -> peakminer-nexus-3060ti.service
-  forge   NixOS, transient drop-in units via systemd-run (NOT Nix-managed).
-          The Nix units are dead; these imp.sh scripts are the live path.
-          -> peakminer-dropin-forge-4060-0.service, peakminer-dropin-forge-4060-1.service
+  forge   NixOS. Persistent units peakminer-forge-4060-0/1.service whose
+          ExecStart is redirected by a /usr/local/lib/systemd/system drop-in
+          (bump.conf -> imp.sh -> hand-installed binary in /home/j_kro).
+          The old transient systemd-run drop-ins are dead: stopping one
+          deletes it (the panel could never restart it), and reboots lose
+          them — do not bring them back.
+          -> peakminer-forge-4060-0.service, peakminer-forge-4060-1.service
   krash2  Windows 11, NSSM service (krash2 SSH alias, user 'krash')
           -> pearlhash (NSSM service name)
 
