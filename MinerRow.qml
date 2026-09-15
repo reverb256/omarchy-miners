@@ -251,6 +251,7 @@ Item {
 
     // ---- Extra info lines (e.g. the xmrig readout on the Kryptex rig) ---
     Column {
+      id: infoColumn
       width: parent.width
       visible: root.infoLines.length > 0
       spacing: Style.space(1)
@@ -261,7 +262,11 @@ Item {
         Text {
           required property var modelData
 
-          width: parent.width
+          // NOT parent.width: in a Repeater delegate the parent is null while
+          // the delegate is being created, so that binding throws
+          // "Cannot read property 'width' of null" on every model rebuild
+          // (the array identity changes every poll).
+          width: infoColumn.width
           text: String(modelData)
           color: root.dim
           font.family: root.fontFamily
