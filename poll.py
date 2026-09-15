@@ -14,6 +14,9 @@ Unit names are DATA, not derived. Each host owns its own naming:
           -> peakminer-forge-4060-0.service, peakminer-forge-4060-1.service
   krash2  Windows 11, NSSM service (krash2 SSH alias, user 'krash')
           -> pearlhash (NSSM service name)
+  krash3  Windows 11, the Kryptex desktop app (monitor-only; no unit).
+          PRL via the bundled SRBMiner's API on the LAN; XMR + GPU power
+          are 127.0.0.1-only reads, gathered over one ssh session.
 
 Deriving a unit from the API port (the previous behaviour) matched no unit on
 any host, so every pause silently did nothing. Keep these strings in step with
@@ -153,6 +156,107 @@ def query_host_over_ssh(config):
     return results
 
 
+def query_kryptex_rig(config):
+    """Read the Kryptex app rig (krash3) in one pass.
+
+    Not peakminer, so there is no /summary to read: PRL comes from the bundled
+    SRBMiner's HTTP API (it binds all interfaces, so the LAN reaches it), XMR
+    comes from the bundled xmrig's HTTP API and GPU power from nvidia-smi —
+    both 127.0.0.1-only, so they are gathered over ONE ssh session.
+
+    Returns {port: peakminer-shaped summary}, or {} when unreachable.
+    """
+    port = config["miners"][0]["port"]
+
+    try:
+        request = urllib.request.Request(
+            f"http://{config['ip']}:{port}/",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            srb = json.loads(response.read().decode())
+    except Exception:
+        return {}
+
+    algorithm = next(iter(srb.get("algorithms") or []), {})
+    hashrate = algorithm.get("hashrate") or {}
+    prl_hashrate = number(
+        hashrate.get("1min")
+        or hashrate.get("1hr")
+        or (hashrate.get("gpu") or {}).get("total")
+    )
+    gpu_stats = next(iter(srb.get("gpu_devices") or []), {})
+
+    model = str(gpu_stats.get("model") or "").replace("_", " ")
+    name = " ".join(
+        {"rtx": "RTX", "gtx": "GTX", "nvidia": "NVIDIA", "geforce": "GeForce"}.get(
+            word.lower(), word.capitalize()
+        )
+        for word in model.split()
+    ) or "GPU"
+
+    # The local-only reads over one ssh session. XMR_END separates the blocks:
+    # cmd/curl prints multi-line JSON, nvidia-smi follows as plain text.
+    script = "; ".join([
+        'cmd /c "curl.exe -s --max-time 3 http://127.0.0.1:12000/2/summary"',
+        "echo XMR_END",
+        "nvidia-smi -q -d POWER",
+        "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits",
+    ])
+    target = config.get("ssh") or f"{config['user']}@{config['ip']}"
+    xmr_hashrate = 0.0
+    xmr_shares = 0
+    power = 0.0
+    utilization = 100.0 if prl_hashrate > 0 else 0.0
+    try:
+        completed = subprocess.run(
+            ["ssh", *SSH_OPTIONS, target, script],
+            capture_output=True,
+            text=True,
+            timeout=SSH_TIMEOUT_SECONDS,
+            check=False,
+        )
+        xmr_part, _, nvidia_part = (completed.stdout or "").partition("XMR_END")
+        try:
+            xmrig = json.loads(xmr_part.strip())
+            totals = (xmrig.get("hashrate") or {}).get("total") or []
+            if len(totals) >= 2:
+                xmr_hashrate = number(totals[1])  # 60-second average
+            xmr_shares = number((xmrig.get("results") or {}).get("shares_good"))
+        except (json.JSONDecodeError, ValueError):
+            pass
+        powers = parse_nvidia_power(nvidia_part)
+        if powers:
+            power = powers[0]
+        # The utilization CSV prints its bare number on the last line.
+        tail = (nvidia_part or "").strip().splitlines()
+        if tail and tail[-1].strip().isdigit():
+            utilization = number(tail[-1].strip(), utilization)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return {
+        port: {
+            "version": f"kryptex-app {srb.get('miner_version', '')}".strip(),
+            "hashrate": prl_hashrate,
+            "gpus": [
+                {
+                    "id": 0,
+                    "name": name,
+                    "hashrate": prl_hashrate,
+                    "temperature_c": gpu_stats.get("temperature"),
+                    "fan_pct": gpu_stats.get("fan_speed_percent"),
+                    "utilization_pct": utilization,
+                    "power_w": power,
+                }
+            ],
+            # Passed through to the record for the XMR line in the panel.
+            "xmrigHashrate": xmr_hashrate,
+            "xmrigShares": xmr_shares,
+        }
+    }
+
+
 def parse_nvidia_power(output):
     """Parse `nvidia-smi -q -d POWER` output.
 
@@ -233,10 +337,15 @@ def poll_fleet():
     remote_hosts = [name for name, config in FLEET.items() if not config.get("local")]
     if remote_hosts:
         with ThreadPoolExecutor(max_workers=len(remote_hosts)) as pool:
-            futures = {
-                pool.submit(query_host_over_ssh, FLEET[name]): name
-                for name in remote_hosts
-            }
+            # The Kryptex app rig has no /summary to read: it gets its own probe.
+            futures = {}
+            for name in remote_hosts:
+                probe = (
+                    query_kryptex_rig
+                    if FLEET[name].get("kind") == "kryptex"
+                    else query_host_over_ssh
+                )
+                futures[pool.submit(probe, FLEET[name])] = name
             for future in as_completed(futures):
                 name = futures[future]
                 try:
@@ -320,6 +429,11 @@ def poll_fleet():
                 "fan": number(gpu.get("fan_pct")),
                 "util": number(gpu.get("utilization_pct")),
             }
+            # The Kryptex app rig has no unit to control: the panel hides the
+            # pause/resume button when controllable is false.
+            record["controllable"] = config.get("control") != "none"
+            record["xmrigHashrate"] = number((summary or {}).get("xmrigHashrate"))
+            record["xmrigShares"] = number((summary or {}).get("xmrigShares"))
             miners.append(record)
 
             if online:

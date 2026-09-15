@@ -42,6 +42,11 @@ def build_command(host, unit, action):
     if unit not in known:
         fail(f"Unknown unit for {host}: {unit}")
 
+    # The Kryptex app rig is monitor-only: there is no unit behind the name,
+    # so never let a stray panel binding reach a control command.
+    if config.get("control") == "none":
+        fail(f"{host} is monitor-only (Kryptex app) — nothing to control")
+
     is_windows = config.get("platform") == "windows"
 
     if is_windows:

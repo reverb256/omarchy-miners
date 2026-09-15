@@ -24,6 +24,11 @@ The fleet is defined in `fleet.py` — one source of truth for the panel and CLI
 | nexus | Omarchy | peakminer-nexus-3060ti.service |
 | forge | NixOS | Persistent units (`peakminer-forge-4060-0/1.service`) with a bump-managed ExecStart override |
 | krash2 | Windows 11 | pearlhash (NSSM service) |
+| krash3 | Windows 11 | Kryptex desktop app — **monitor-only** (no unit) |
+
+The krash3 row is read-only: its numbers come from the Kryptex app's bundled
+SRBMiner API (PRL), xmrig API (XMR) and nvidia-smi. There is no unit to pause,
+so the panel hides its control.
 
 ### Earnings estimate
 

@@ -17,6 +17,11 @@ Unit names are DATA, never derived. Each host names its miners its own way:
           -> peakminer-forge-4060-0.service, peakminer-forge-4060-1.service
   krash2  Windows 11, NSSM service (krash2 SSH alias, user 'krash')
           -> pearlhash (NSSM service name)
+  krash3  Windows 11, the Kryptex desktop app (krash3 SSH alias, user j_kro).
+          Monitor-only — there is no unit to control. Data comes from the
+          app's bundled miners: SRBMiner HTTP API for PRL (LAN-visible),
+          xmrig HTTP API for XMR (127.0.0.1 only; read over ssh), and
+          nvidia-smi for the GPU.
 
 Forge runs PERSISTENT units — standard systemctl-managed service files.
 The old transient drop-in path (systemd-run + imp.sh scripts) is dead.
@@ -32,6 +37,8 @@ from __future__ import annotations
 #   local     run systemctl here instead of over ssh
 #   unit      the EXACT systemd unit, verified on the host
 #   platform  "linux" (default) or "windows" (NSSM services)
+#   kind      "peakminer" (default) or "kryptex" (the Kryptex app rig)
+#   control   "none" makes a host monitor-only (no unit to start/stop)
 #   transient units are created via systemd-run, not as persistent files (forge)
 #   script    path to the imp.sh script on the host (transient units only)
 #   conflicts unit to Conflicts= against so the Nix unit stays dormant (transient)
@@ -105,6 +112,27 @@ FLEET = {
             {
                 "port": 4069,
                 "unit": "pearlhash",
+                "label": "RTX 4060",
+                "powerLimit": 115,
+            },
+        ],
+    },
+    "krash3": {
+        "ip": "10.1.1.150",
+        "ssh": "krash3",
+        "local": False,
+        "user": "j_kro",
+        "platform": "windows",
+        # The Kryptex desktop app, not peakminer: monitor-only. There is no
+        # systemd/NSSM unit, so the panel hides this row's pause/resume.
+        "control": "none",
+        "kind": "kryptex",
+        "miners": [
+            {
+                # The bundled SRBMiner's API port on the host (the PRL miner).
+                "port": 12008,
+                # No unit exists; this is the row's display identity.
+                "unit": "kryptex-app",
                 "label": "RTX 4060",
                 "powerLimit": 115,
             },

@@ -41,6 +41,8 @@ Item {
   readonly property bool tempWarning: online && !tempAlarming && temp >= tempWarnC
   // A card pinned against its power limit is the same class of signal as heat.
   readonly property bool powerAlarming: online && powerRatio >= 0.98
+  // Monitor-only rows (the Kryptex app rig) get no pause/resume at all.
+  readonly property bool controllable: !root.miner || root.miner.controllable !== false
 
   signal toggleRequested()
 
@@ -128,7 +130,7 @@ Item {
         // travel the same connection the poll just failed to make, and qs.Ui's
         // Button has no disabled state — its MouseArea always accepts clicks,
         // so a dimmed-looking button would still fire.
-        visible: !root.unknown
+        visible: !root.unknown && root.controllable
         text: root.busy ? "…" : (root.online ? "Pause" : "Resume")
         bordered: true
         foreground: root.foreground
@@ -234,6 +236,9 @@ Item {
           if (fan > 0) parts.push("fan " + fan.toFixed(0) + "%")
           if (util > 0) parts.push("util " + util.toFixed(0) + "%")
           if (root.online && root.earningsText !== "") parts.push(root.earningsText)
+          // The Kryptex app rig also runs xmrig; both rates belong to the row.
+          var xmr = Number(root.miner.xmrigHashrate || 0)
+          if (root.online && xmr > 0) parts.push(root.miner.xmrigText + " XMR")
           return parts.join("  ·  ")
         }
         color: root.dim
@@ -259,6 +264,9 @@ Item {
         + "\nport " + String(root.miner.port)
         + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText : "\nstopped")
         + (root.online && root.earningsText !== "" ? "\n" + root.earningsText + " at the current pool rate" : "")
+        + (root.online && Number(root.miner.xmrigHashrate || 0) > 0
+            ? "\nXMR " + root.miner.xmrigText + " · " + Number(root.miner.xmrigShares || 0).toFixed(0) + " shares"
+            : "")
       : ""
   }
 }

@@ -100,6 +100,7 @@ Item {
     for (var i = 0; i < records.length; i++) {
       records[i].hashrateText = Format.formatHashrate(records[i].hashrate)
       records[i].powerText = Format.formatPower(records[i].power)
+      records[i].xmrigText = Format.formatHashrate(records[i].xmrigHashrate || 0)
     }
     miners = records
     hosts = parsed.hosts || ({})
@@ -292,6 +293,8 @@ Item {
   function resume(miner) { runAction("start", miner) }
   function toggle(miner) {
     if (!miner) return
+    // Monitor-only rows (the Kryptex app rig) have no unit behind them.
+    if (miner.controllable === false) return
     if (miner.online) pause(miner)
     else resume(miner)
   }
