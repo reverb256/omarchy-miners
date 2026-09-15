@@ -48,3 +48,29 @@ function formatPercent(value) {
   if (!isFinite(pct)) return "—"
   return pct.toFixed(1) + "%"
 }
+
+// Money, with the symbol the currency actually uses. Unknown codes fall back
+// to a plain "CODE " prefix rather than guessing a symbol.
+function formatFiat(value, currency) {
+  var amount = Number(value)
+  if (!isFinite(amount)) return "—"
+  var symbols = { USD: "$", CAD: "CA$", EUR: "€", GBP: "£" }
+  var code = String(currency || "USD").toUpperCase()
+  var prefix = symbols[code] || code + " "
+  var abs = Math.abs(amount)
+  var digits = abs >= 1000 ? 0 : (abs >= 100 ? 1 : 2)
+  var text = abs.toFixed(digits)
+  var dot = text.indexOf(".")
+  var whole = (dot >= 0 ? text.slice(0, dot) : text).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  var rest = dot >= 0 ? text.slice(dot) : ""
+  return (amount < 0 ? "-" : "") + prefix + whole + rest
+}
+
+// Coin amounts: keep enough precision to be useful at sub-coin daily rates.
+function formatCoins(value) {
+  var amount = Number(value)
+  if (!isFinite(amount)) return "—"
+  if (amount >= 100) return amount.toFixed(1)
+  if (amount >= 1) return amount.toFixed(2)
+  return amount.toFixed(4)
+}

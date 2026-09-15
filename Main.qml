@@ -139,6 +139,93 @@ Item {
     onTriggered: root.refresh()
   }
 
+  // ---------------------------------------------------------------- revenue
+  // Estimated PRL earnings: the pool's coins/day rate for a hashrate x the live
+  // PRL price. prl-revenue does the fetching (keyless, from the same public
+  // endpoints as the pool's own web calculator); this side scales the rate by
+  // the CURRENT hashrate, so displayed numbers stay live between fetches.
+
+  property var revenue: ({})
+  property bool revenueInitialized: false
+  property string revenueError: ""
+  property real revenueUpdatedAt: 0
+
+  readonly property real revenuePrice: Number(revenue.price || 0)
+  readonly property real revenueRate: Number(revenue.rateCoinsPerHsDay || 0)
+  readonly property string revenueCurrency: String(revenue.currency || "USD").toUpperCase()
+  readonly property bool revenueReady: revenuePrice > 0 && revenueRate > 0
+
+  function earningsDayCoins(hashrate) {
+    return revenueRate * Number(hashrate || 0)
+  }
+
+  function earningsDayFiat(hashrate) {
+    return earningsDayCoins(hashrate) * revenuePrice
+  }
+
+  function refreshRevenue() {
+    if (revenueProcess.running) return
+    revenueProcess.command = [
+      "python3", pluginDir + "/prl-revenue",
+      "--hashrate", String(Math.max(0, Math.round(totalHashrate))),
+      "--currency", String(setting("revenueCurrency", "USD")),
+    ]
+    revenueProcess.running = true
+  }
+
+  function applyRevenue(text) {
+    revenueInitialized = true
+    var parsed
+    try {
+      parsed = JSON.parse(String(text || ""))
+    } catch (error) {
+      revenueError = "The earnings fetch returned something unreadable"
+      return
+    }
+    if (parsed && parsed.error) {
+      revenueError = String(parsed.error)
+      console.warn("miners: revenue fetch failed:", revenueError)
+      return
+    }
+    // Keep the last good numbers on a failed refresh rather than blanking.
+    revenueError = ""
+    revenue = parsed
+    revenueUpdatedAt = Date.now()
+    // debug, not info: this shell routes qml DEBUG/WARN to the journal but
+    // never emits INFO-level qml lines.
+    console.debug("miners: revenue estimate loaded — "
+      + Format.formatFiat(earningsDayFiat(totalHashrate), revenueCurrency) + "/day at PRL "
+      + Number(parsed.price || 0).toFixed(4) + " " + revenueCurrency)
+  }
+
+  Process {
+    id: revenueProcess
+    running: false
+
+    stdout: StdioCollector { id: revenueStdout; waitForEnd: true }
+    stderr: StdioCollector { id: revenueStderr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.applyRevenue(revenueStdout.text)
+        return
+      }
+      root.revenueInitialized = true
+      var detail = String(revenueStderr.text || "").replace(/\s+/g, " ").trim()
+      root.revenueError = detail !== "" ? detail : "The earnings fetch exited with code " + exitCode
+      console.warn("miners: revenue fetch failed:", root.revenueError)
+    }
+  }
+
+  Timer {
+    id: revenueTimer
+    interval: Math.max(60, Number(setting("revenueIntervalSec", 600))) * 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refreshRevenue()
+  }
+
   // ---------------------------------------------------------------- control
 
   // One Process per action, created from a declared component rather than

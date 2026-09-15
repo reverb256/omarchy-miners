@@ -61,3 +61,7 @@ python3 ./miner-control status forge peakminer-forge-4060-0.service |
 printf 'G18 forge 4060-1           : '
 python3 ./miner-control status forge peakminer-forge-4060-1.service |
   python3 -c "import sys,json;print(json.load(sys.stdin)['ok'])"
+
+printf 'G19 revenue feed works    : '
+python3 ./prl-revenue --hashrate 1000000000000 |
+  python3 -c "import sys,json;d=json.load(sys.stdin);print('ok' if d.get('rateCoinsPerHsDay',0)>0 and d.get('price',0)>0 else 'FAIL:'+str(d.get('error','')))"

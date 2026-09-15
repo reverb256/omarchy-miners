@@ -240,6 +240,67 @@ Panel {
             fontFamily: root.fontFamily
           }
 
+          // ---- Estimated earnings (pool rate x live PRL price) ----------
+          // Hidden until the first successful fetch and when nothing is
+          // mining: "$0.00/day" would look like a fact about the fleet.
+          Column {
+            visible: root.fleet && root.fleet.revenueReady && root.fleet.anyOnline && root.fleet.revenueError === ""
+            width: parent.width
+            spacing: Style.space(4)
+
+            StatPill {
+              width: parent.width
+              label: "Est. per hour"
+              value: Format.formatFiat(root.fleet.earningsDayFiat(root.fleet.totalHashrate) / 24, root.fleet.revenueCurrency)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            StatPill {
+              width: parent.width
+              label: "Est. per day"
+              value: Format.formatFiat(root.fleet.earningsDayFiat(root.fleet.totalHashrate), root.fleet.revenueCurrency)
+                + "  ·  " + Format.formatCoins(root.fleet.earningsDayCoins(root.fleet.totalHashrate)) + " PRL"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            StatPill {
+              width: parent.width
+              label: "Est. per month"
+              value: Format.formatFiat(root.fleet.earningsDayFiat(root.fleet.totalHashrate) * 30, root.fleet.revenueCurrency)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: {
+                if (!root.fleet || !root.fleet.revenueReady) return ""
+                return "PRL " + Number(root.fleet.revenuePrice).toFixed(4) + " " + root.fleet.revenueCurrency
+                  + "  ·  pool rate  ·  updated " + Format.formatAgo(root.fleet.revenueUpdatedAt)
+              }
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+              elide: Text.ElideRight
+            textFormat: Text.PlainText
+            }
+          }
+
+          Text {
+            visible: root.fleet ? root.fleet.revenueError !== "" && root.fleet.anyOnline : false
+            width: parent.width
+            text: root.fleet ? "Earnings estimate unavailable: " + root.fleet.revenueError : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
+          }
+
           Text {
             visible: root.fleet && root.fleet.initialized && root.fleet.lastError === "" && root.hostCount === 0
             width: parent.width
@@ -276,6 +337,9 @@ Panel {
                 urgent: root.urgent
                 fontFamily: root.fontFamily
                 hashrateText: Format.formatHashrate(modelData.stats ? modelData.stats.hashrate : 0)
+                earningsText: root.fleet && root.fleet.revenueReady && modelData.stats && modelData.stats.connected
+                  ? Format.formatFiat(root.fleet.earningsDayFiat(modelData.stats.hashrate), root.fleet.revenueCurrency) + "/day"
+                  : ""
               }
 
               Repeater {
@@ -292,6 +356,9 @@ Panel {
                   tempWarnC: root.tempWarnC
                   tempAlarmC: root.tempAlarmC
                   busy: root.dataBusy(modelData.unit)
+                  earningsText: root.fleet && root.fleet.revenueReady && modelData.online
+                    ? Format.formatFiat(root.fleet.earningsDayFiat(modelData.hashrate), root.fleet.revenueCurrency) + "/day"
+                    : ""
                   onToggleRequested: if (root.fleet) root.fleet.toggle(modelData)
                 }
               }

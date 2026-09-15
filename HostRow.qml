@@ -16,6 +16,9 @@ Item {
   property color urgent: Color.urgent
   property string fontFamily: Style.font.family
   property string hashrateText: ""
+  // Fully formatted by Panel (e.g. "$2.10/day"), empty when unknown — keeping
+  // number formatting in one place, the same split the poller uses.
+  property string earningsText: ""
 
   readonly property color dim: Qt.darker(foreground, 1.4)
   readonly property bool connected: !!stats && stats.connected === true
@@ -56,6 +59,7 @@ Item {
       if (!root.connected) return root.configured > 0 ? "idle" : ""
       var text = root.hashrateText
       if (root.partial) text += "  ·  " + root.online + "/" + root.configured
+      if (root.earningsText !== "") text += "  ·  " + root.earningsText
       return text
     }
     color: (root.partial || !root.reachable) ? root.urgent : (root.connected ? root.foreground : root.dim)

@@ -77,6 +77,7 @@ BarWidget {
   readonly property string barDisplay: String(setting("barDisplay", "Hashrate"))
   readonly property bool iconOnly: barDisplay === "Icon only"
   readonly property bool showPower: barDisplay === "Hashrate and power"
+  readonly property bool showEarnings: barDisplay === "Earnings ($/day)"
   readonly property int tempAlarmC: Number(setting("tempAlarmC", 80))
 
   // nf-md-pickaxe. JetBrainsMono Nerd Font has no U+26CF, so the Unicode
@@ -96,6 +97,11 @@ BarWidget {
     if (iconOnly) return ""
     if (!fleetData.initialized) return ""
     if (!fleetData.anyOnline) return ""
+    if (showEarnings) {
+      // No rate yet -> fall back to a bare icon rather than a fake "$0.00".
+      if (!fleetData.revenueReady) return ""
+      return Format.formatFiat(fleetData.earningsDayFiat(fleetData.totalHashrate), fleetData.revenueCurrency) + "/day"
+    }
     var text = Format.formatHashrate(fleetData.totalHashrate)
     if (showPower) text += "  " + Format.formatPower(fleetData.totalPower)
     return text
@@ -113,6 +119,11 @@ BarWidget {
       if (!miner.online) continue
       lines.push(miner.host + " " + miner.label + "   " + miner.hashrateText
         + "  " + miner.powerText + "  " + Number(miner.temp || 0).toFixed(0) + "°C")
+    }
+    if (fleetData.revenueReady) {
+      var day = fleetData.earningsDayFiat(fleetData.totalHashrate)
+      lines.push("≈ " + Format.formatFiat(day, fleetData.revenueCurrency) + "/day"
+        + "  ·  " + Format.formatFiat(day * 30, fleetData.revenueCurrency) + "/mo")
     }
     return lines.join("\n")
   }

@@ -23,6 +23,9 @@ Item {
   property int tempWarnC: 70
   property int tempAlarmC: 80
   property bool busy: false
+  // Fully formatted by Panel (e.g. "$1.15/day"), empty when unknown — number
+  // formatting stays in one place, the same split the poller uses.
+  property string earningsText: ""
 
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property bool online: !!miner && miner.online === true
@@ -218,6 +221,11 @@ Item {
         id: detailText
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
+        // Constrained so a long earnings label elides instead of running
+        // under the temperature on the left.
+        anchors.left: tempText.right
+        anchors.leftMargin: Style.spacing.sm
+        elide: Text.ElideLeft
         text: {
           if (!root.miner) return ""
           var parts = []
@@ -225,6 +233,7 @@ Item {
           var util = Number(root.miner.util || 0)
           if (fan > 0) parts.push("fan " + fan.toFixed(0) + "%")
           if (util > 0) parts.push("util " + util.toFixed(0) + "%")
+          if (root.online && root.earningsText !== "") parts.push(root.earningsText)
           return parts.join("  ·  ")
         }
         color: root.dim
@@ -249,6 +258,7 @@ Item {
       ? String(root.miner.host) + " · " + String(root.miner.unit)
         + "\nport " + String(root.miner.port)
         + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText : "\nstopped")
+        + (root.online && root.earningsText !== "" ? "\n" + root.earningsText + " at the current pool rate" : "")
       : ""
   }
 }

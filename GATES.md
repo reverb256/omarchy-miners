@@ -22,6 +22,7 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G16 | zephyr 3090 unit live | `systemctl is-active peakminer-3090.service` | `active` |
 | G17 | forge 4060-0 controllable | `miner-control status forge peakminer-forge-4060-0.service` | `True` |
 | G18 | forge 4060-1 controllable | `miner-control status forge peakminer-forge-4060-1.service` | `True` |
+| G19 | Revenue feed works | `./prl-revenue --hashrate 1000000000000` returns `rateCoinsPerHsDay` and `price` | `ok` |
 
 forge runs PERSISTENT units (`peakminer-forge-4060-0/1.service`) whose
 ExecStart is redirected by a `/usr/local/lib/systemd/system` drop-in
