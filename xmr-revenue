@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Estimate XMR mining earnings from a hashrate using public, keyless APIs.
+
+Data sources (same origin as PRL — the endpoints the pool's own calculator uses):
+
+  /api/v1/rates                      price feed; crypto.XMR is USD
+  /api/v2/daily-revenue/XMR?hashrate coins/day the pool pays for that hashrate
+
+Fallbacks when Kryptex is unreachable:
+  price: CoinGecko simple/price (ids=monero)
+  rate:  xmrchain.net/api/networkinfo hash_rate with the fixed 0.6 XMR/block
+         tail emission and 120 s blocks: (86400/120) * 0.6 / network_hashrate
+
+The rate is probed at a fixed 100 kH/s so it is independent of rig state;
+callers scale it by any hashrate (the pool pays linearly per share).
+The requested hashrate is only used for the perDay..perYear snapshot fields.
+
+Output: one JSON document on stdout, always exit 0. Failures come back as
+{"error": "<reason>"} so the panel can render the reason instead of a blank.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.request
+
+API_BASE = "https://pool.kryptex.com"
+COINGECKO = "https://api.coingecko.com/api/v3/simple/price"
+XMRCHAIN = "https://xmrchain.net/api/networkinfo"
+PROBE_HASHRATE = 100_000  # 100 kH/s
+BLOCK_REWARD = 0.6        # XMR tail emission, fixed since 2022
+BLOCK_TIME = 120.0        # seconds
+USER_AGENT = "omarchy-miners/2.1 (+https://github.com/reverb256/omarchy-miners)"
+TIMEOUT = 10
+
+
+def fetch_json(url: str):
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        return json.loads(response.read().decode())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--hashrate", type=int, default=0,
+                        help="hashrate in H/s for the snapshot fields (default 0)")
+    parser.add_argument("--currency", default="usd",
+                        help="fiat currency code for the estimate (default usd)")
+    args = parser.parse_args()
+
+    currency = str(args.currency or "usd").strip().upper() or "USD"
+    out = {
+        "coin": "XMR",
+        "currency": currency.lower(),
+        "fetchedAt": int(time.time()),
+        "source": "pool.kryptex.com",
+        "hashrate": max(0, int(args.hashrate)),
+        "error": "",
+    }
+
+    # ---- price (Kryptex rates first, CoinGecko as fallback, USD-only) ----
+    price = None
+    price_usd = None
+    source = None
+    try:
+        rates = fetch_json(f"{API_BASE}/api/v1/rates")
+        price_usd = float(rates["crypto"]["XMR"])
+        fiat = rates.get("fiat") or {}
+        if currency == "USD":
+            price = price_usd
+        else:
+            multiplier = fiat.get(currency)
+            price = price_usd * float(multiplier) if multiplier else None
+        source = "kryptex-rates"
+    except Exception:
+        try:
+            cg = fetch_json(f"{COINGECKO}?ids=monero&vs_currencies=usd")
+            price_usd = float(cg["monero"]["usd"])
+            price = price_usd if currency == "USD" else None
+            source = "coingecko"
+        except Exception:
+            pass
+
+    if price is None and price_usd is not None:
+        # A non-USD request we cannot convert: report USD rather than nothing.
+        currency = "USD"
+        price = price_usd
+        out["currency"] = "usd"
+    if price is None:
+        out["error"] = "XMR price unavailable (Kryptex rates and CoinGecko both failed)"
+        print(json.dumps(out))
+        sys.exit(0)
+
+    out["price"] = price
+    out["priceUsd"] = price_usd
+    out["priceSource"] = source
+
+    # ---- coins/day rate (probe at 100 kH/s; the pool pays linearly) ----
+    rate = None
+    pool_error = None
+    try:
+        probe = max(int(args.hashrate), PROBE_HASHRATE)
+        revenue = fetch_json(f"{API_BASE}/api/v2/daily-revenue/XMR?hashrate={probe}")
+        entry = next(
+            (row for row in revenue if str(row.get("coin", "")).upper() == "XMR"),
+            None,
+        )
+        if entry is None:
+            raise ValueError("no XMR entry in daily-revenue response")
+        rate = float(entry["coins"]) / probe
+        out["rateSource"] = f"kryptex-daily-revenue@{probe}"
+    except Exception as error:
+        pool_error = str(error)
+
+    if rate is None:
+        # Network fallback: tail emission over the reported network hashrate.
+        try:
+            net = fetch_json(XMRCHAIN).get("data") or {}
+            network_hashrate = float(net.get("hash_rate") or 0)
+            if network_hashrate <= 0:
+                network_hashrate = float(net["difficulty"]) / BLOCK_TIME
+            rate = (86400.0 / BLOCK_TIME) * BLOCK_REWARD / network_hashrate
+            out["networkHashrate"] = network_hashrate
+            out["rateSource"] = f"xmrchain-netinfo@{network_hashrate:.0f}Hs"
+        except Exception:
+            out["error"] = f"XMR rate unavailable: {pool_error}"
+            print(json.dumps(out))
+            sys.exit(0)
+
+    hashrate = max(0, int(args.hashrate))
+    per_day_coins = rate * hashrate
+    per_day_fiat = per_day_coins * price
+    out["rateCoinsPerHsDay"] = rate
+    out["perDay"] = {"coins": per_day_coins, "fiat": per_day_fiat}
+    out["perHour"] = {"coins": per_day_coins / 24.0, "fiat": per_day_fiat / 24.0}
+    out["perMonth"] = {"coins": per_day_coins * 30.0, "fiat": per_day_fiat * 30.0}
+    out["perYear"] = {"coins": per_day_coins * 365.0, "fiat": per_day_fiat * 365.0}
+
+    print(json.dumps(out))
+
+
+if __name__ == "__main__":
+    main()

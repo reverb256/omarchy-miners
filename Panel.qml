@@ -364,7 +364,8 @@ Panel {
                         ("XMR " + modelData.xmrigText
                           + "  ·  " + Math.round(Number(modelData.xmrigShares || 0))
                           + "/" + Math.round(Number(modelData.xmrigSharesTotal || 0)) + " shares"
-                          + (modelData.xmrigAlgo ? "  ·  " + modelData.xmrigAlgo : "")),
+                          + (modelData.xmrigAlgo ? "  ·  " + modelData.xmrigAlgo : "")
+                          + (modelData.xmrigRevenueText ? "  ·  " + modelData.xmrigRevenueText : "")),
                         [String(modelData.xmrigPool || ""),
                          String(modelData.xmrigCpu || "")].filter(function(part) { return part !== ""; }).join("  ·  "),
                       ].filter(function(line) { return line !== ""; })

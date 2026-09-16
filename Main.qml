@@ -101,6 +101,9 @@ Item {
       records[i].hashrateText = Format.formatHashrate(records[i].hashrate)
       records[i].powerText = Format.formatPower(records[i].power)
       records[i].xmrigText = Format.formatHashrate(records[i].xmrigHashrate || 0)
+      records[i].xmrigRevenueText = root.xmrRevenueReady && Number(records[i].xmrigHashrate || 0) > 0
+        ? Format.formatFiat(root.earningsDayXmrFiat(records[i].xmrigHashrate), root.xmrRevenueCurrency) + "/day"
+        : ""
     }
     miners = records
     hosts = parsed.hosts || ({})
@@ -225,6 +228,89 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refreshRevenue()
+  }
+
+  // ------------------------------------------------------------- xmr revenue
+  // The same idea for krash3's CPU miner: xmr-revenue probes Kryptex's XMR
+  // coins/day rate + price (keyless; xmrchain chain stats as fallback); this
+  // side scales the rate by the live xmrig hashrate so the row tracks the rig.
+
+  property var xmrRevenue: ({})
+  property bool xmrRevenueInitialized: false
+  property string xmrRevenueError: ""
+
+  readonly property real xmrRevenuePrice: Number(xmrRevenue.price || 0)
+  readonly property real xmrRevenueRate: Number(xmrRevenue.rateCoinsPerHsDay || 0)
+  readonly property string xmrRevenueCurrency: String(xmrRevenue.currency || "USD").toUpperCase()
+  readonly property bool xmrRevenueReady: xmrRevenueRate > 0 && xmrRevenuePrice > 0
+
+  readonly property real totalXmrigHashrate: {
+    var sum = 0
+    for (var i = 0; i < miners.length; i++) sum += Number(miners[i].xmrigHashrate || 0)
+    return sum
+  }
+
+  function earningsDayXmrFiat(hashrate) {
+    return xmrRevenueRate * Number(hashrate || 0) * xmrRevenuePrice
+  }
+
+  function refreshXmrRevenue() {
+    if (xmrRevenueProcess.running) return
+    xmrRevenueProcess.command = [
+      "python3", pluginDir + "/xmr-revenue",
+      "--hashrate", String(Math.max(0, Math.round(totalXmrigHashrate))),
+      "--currency", String(setting("revenueCurrency", "USD")),
+    ]
+    xmrRevenueProcess.running = true
+  }
+
+  function applyXmrRevenue(text) {
+    xmrRevenueInitialized = true
+    var parsed
+    try {
+      parsed = JSON.parse(String(text || ""))
+    } catch (error) {
+      xmrRevenueError = "The XMR earnings fetch returned something unreadable"
+      return
+    }
+    if (parsed && parsed.error) {
+      xmrRevenueError = String(parsed.error)
+      console.warn("miners: xmr revenue fetch failed:", xmrRevenueError)
+      return
+    }
+    xmrRevenueError = ""
+    xmrRevenue = parsed
+    console.debug("miners: xmr revenue loaded — "
+      + Format.formatFiat(earningsDayXmrFiat(totalXmrigHashrate), xmrRevenueCurrency) + "/day at XMR "
+      + Number(parsed.price || 0).toFixed(2) + " " + xmrRevenueCurrency)
+  }
+
+  Process {
+    id: xmrRevenueProcess
+    running: false
+
+    stdout: StdioCollector { id: xmrRevenueStdout; waitForEnd: true }
+    stderr: StdioCollector { id: xmrRevenueStderr; waitForEnd: true }
+
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.applyXmrRevenue(xmrRevenueStdout.text)
+        return
+      }
+      root.xmrRevenueInitialized = true
+      var detail = String(xmrRevenueStderr.text || "").replace(/\s+/g, " ").trim()
+      root.xmrRevenueError = detail !== "" ? detail : "The XMR earnings fetch exited with code " + exitCode
+      console.warn("miners: xmr revenue fetch failed:", root.xmrRevenueError)
+    }
+  }
+
+  Timer {
+    id: xmrRevenueTimer
+    interval: Math.max(60, Number(setting("revenueIntervalSec", 600))) * 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refreshXmrRevenue()
   }
 
   // ---------------------------------------------------------------- control

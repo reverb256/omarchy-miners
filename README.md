@@ -29,7 +29,8 @@ The fleet is defined in `fleet.py` — one source of truth for the panel and CLI
 The krash3 row is read-only: its numbers come from the Kryptex app's bundled
 SRBMiner API (PRL), xmrig API (XMR) and nvidia-smi. There is no unit to pause,
 so the panel hides its control. The xmrig readout is shown under the row:
-XMR hashrate, accepted shares, algorithm, pool and CPU.
+XMR hashrate, accepted shares, algorithm, pool, CPU, and an estimated $/day
+for the CPU hashrate (see "Earnings estimate").
 
 ### Earnings estimate
 
@@ -43,6 +44,12 @@ web calculator uses:
 
 CoinGecko (`pearl-2`) is the price fallback if the pool feed is down. The
 estimate is gross of pool fees; it is an estimate, not a promise.
+
+`xmr-revenue` does the same for the krash3 CPU miner's XMR hashrate, from the
+same keyless sources — `crypto.XMR` on `/api/v1/rates` and
+`/api/v2/daily-revenue/XMR` (probed at 100 kH/s). Fallbacks: CoinGecko
+(`monero`) for price and `xmrchain.net/api/networkinfo` chain stats — the
+fixed 0.6 XMR/block tail emission over the network hashrate — for the rate.
 
 ## Security
 
@@ -59,6 +66,7 @@ estimate is gross of pool fees; it is an estimate, not a promise.
 - **`fleet.py`** — Fleet definition (one source of truth)
 - **`poll.py`** — Polls all miners, emits JSON for QML binding
 - **`prl-revenue`** — Pool rate + PRL price → $/hour · $/day · $/month
+- **`xmr-revenue`** — Pool rate + XMR price → the krash3 CPU miner's $/day
 - **`miner-control`** — Privileged entry point for systemctl operations
 - **`run-gates.sh`** — Plugin gates (validation tests)
 
