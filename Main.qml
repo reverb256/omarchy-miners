@@ -250,6 +250,11 @@ Item {
     return sum
   }
 
+  // All-in fleet totals: PRL (the GPU fleet) + XMR (the krash3 CPU miner).
+  // Per-row figures stay per-coin; only the fleet totals fold together.
+  readonly property real xmrDayFiat: xmrRevenueReady ? earningsDayXmrFiat(totalXmrigHashrate) : 0
+  readonly property real totalDayFiat: (revenueReady ? earningsDayFiat(totalHashrate) : 0) + xmrDayFiat
+
   function earningsDayXmrFiat(hashrate) {
     return xmrRevenueRate * Number(hashrate || 0) * xmrRevenuePrice
   }

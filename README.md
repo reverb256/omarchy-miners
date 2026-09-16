@@ -51,6 +51,10 @@ same keyless sources — `crypto.XMR` on `/api/v1/rates` and
 (`monero`) for price and `xmrchain.net/api/networkinfo` chain stats — the
 fixed 0.6 XMR/block tail emission over the network hashrate — for the rate.
 
+The fleet totals (panel hero pills, bar earnings text, tooltip) fold both
+together: all-in $/day = PRL fleet + krash3 XMR. Per-row figures stay
+per-coin; the price caption lists both pool rates.
+
 ## Security
 
 - **Service management**: The plugin manages systemd services (start/stop/restart/status) on local and remote hosts. Units are validated against the fleet definition before any systemctl call.

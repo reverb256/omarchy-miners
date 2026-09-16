@@ -251,7 +251,7 @@ Panel {
             StatPill {
               width: parent.width
               label: "Est. per hour"
-              value: Format.formatFiat(root.fleet.earningsDayFiat(root.fleet.totalHashrate) / 24, root.fleet.revenueCurrency)
+              value: Format.formatFiat(root.fleet.totalDayFiat / 24, root.fleet.revenueCurrency)
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -259,7 +259,7 @@ Panel {
             StatPill {
               width: parent.width
               label: "Est. per day"
-              value: Format.formatFiat(root.fleet.earningsDayFiat(root.fleet.totalHashrate), root.fleet.revenueCurrency)
+              value: Format.formatFiat(root.fleet.totalDayFiat, root.fleet.revenueCurrency)
                 + "  ·  " + Format.formatCoins(root.fleet.earningsDayCoins(root.fleet.totalHashrate)) + " PRL"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -268,7 +268,7 @@ Panel {
             StatPill {
               width: parent.width
               label: "Est. per month"
-              value: Format.formatFiat(root.fleet.earningsDayFiat(root.fleet.totalHashrate) * 30, root.fleet.revenueCurrency)
+              value: Format.formatFiat(root.fleet.totalDayFiat * 30, root.fleet.revenueCurrency)
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -277,8 +277,10 @@ Panel {
               width: parent.width
               text: {
                 if (!root.fleet || !root.fleet.revenueReady) return ""
-                return "PRL " + Number(root.fleet.revenuePrice).toFixed(4) + " " + root.fleet.revenueCurrency
-                  + "  ·  pool rate  ·  updated " + Format.formatAgo(root.fleet.revenueUpdatedAt)
+                var line = "PRL " + Number(root.fleet.revenuePrice).toFixed(4) + " " + root.fleet.revenueCurrency
+                if (root.fleet.xmrRevenueReady)
+                  line += "  ·  XMR " + Number(root.fleet.xmrRevenuePrice).toFixed(2)
+                return line + "  ·  pool rates  ·  updated " + Format.formatAgo(root.fleet.revenueUpdatedAt)
               }
               color: root.dim
               font.family: root.fontFamily

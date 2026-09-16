@@ -100,7 +100,8 @@ BarWidget {
     if (showEarnings) {
       // No rate yet -> fall back to a bare icon rather than a fake "$0.00".
       if (!fleetData.revenueReady) return ""
-      return Format.formatFiat(fleetData.earningsDayFiat(fleetData.totalHashrate), fleetData.revenueCurrency) + "/day"
+      // All-in: PRL fleet + the krash3 XMR CPU miner (folded same as the panel).
+      return Format.formatFiat(fleetData.totalDayFiat, fleetData.revenueCurrency) + "/day"
     }
     var text = Format.formatHashrate(fleetData.totalHashrate)
     if (showPower) text += "  " + Format.formatPower(fleetData.totalPower)
@@ -121,9 +122,12 @@ BarWidget {
         + "  " + miner.powerText + "  " + Number(miner.temp || 0).toFixed(0) + "°C")
     }
     if (fleetData.revenueReady) {
-      var day = fleetData.earningsDayFiat(fleetData.totalHashrate)
-      lines.push("≈ " + Format.formatFiat(day, fleetData.revenueCurrency) + "/day"
-        + "  ·  " + Format.formatFiat(day * 30, fleetData.revenueCurrency) + "/mo")
+      var day = fleetData.totalDayFiat
+      var line = "≈ " + Format.formatFiat(day, fleetData.revenueCurrency) + "/day"
+        + "  ·  " + Format.formatFiat(day * 30, fleetData.revenueCurrency) + "/mo"
+      if (fleetData.xmrRevenueReady && fleetData.xmrDayFiat > 0)
+        line += "  (incl. XMR " + Format.formatFiat(fleetData.xmrDayFiat, fleetData.revenueCurrency) + "/day)"
+      lines.push(line)
     }
     return lines.join("\n")
   }
