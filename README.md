@@ -22,7 +22,7 @@ The fleet is defined in `fleet.py` — one source of truth for the panel and CLI
 |------|----------|-------|
 | zephyr | Omarchy | peakminer-3060ti.service, peakminer-3090.service |
 | nexus | Omarchy | peakminer-nexus-3060ti.service |
-| forge | NixOS | Persistent units (`peakminer-forge-4060-0/1.service`) with a bump-managed ExecStart override |
+| forge | Omarchy | Persistent units (`peakminer-forge-4060-0/1.service`), hand-installed |
 | krash2 | Windows 11 | pearlhash (NSSM service) |
 | krash3 | Windows 11 | Kryptex desktop app — **monitor-only** (no unit) |
 

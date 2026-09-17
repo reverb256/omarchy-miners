@@ -73,6 +73,7 @@ Item {
     refreshing = true
     pollProcess.command = ["python3", pluginDir + "/poll.py"]
     pollProcess.running = true
+    pollWatchdog.restart()
   }
 
   function applyPoll(text) {
@@ -124,6 +125,7 @@ Item {
     stderr: StdioCollector { id: pollStderr; waitForEnd: true }
 
     onExited: function(exitCode) {
+      pollWatchdog.stop()
       if (exitCode === 0) {
         root.applyPoll(pollStdout.text)
         return
@@ -132,6 +134,22 @@ Item {
       root.initialized = true
       var detail = String(pollStderr.text || "").replace(/\s+/g, " ").trim()
       root.lastError = detail !== "" ? detail : "The miner poller exited with code " + exitCode
+    }
+  }
+
+  // A poll that never exits would freeze the panel for good: the refresh guard
+  // skips every later tick while the process still runs. Kill a wedged poll and
+  // let the next tick start a fresh one.
+  Timer {
+    id: pollWatchdog
+    interval: 45000
+    repeat: false
+    onTriggered: {
+      if (pollProcess.running) {
+        pollProcess.running = false
+        root.refreshing = false
+        root.lastError = "The miner poller took too long — retrying"
+      }
     }
   }
 

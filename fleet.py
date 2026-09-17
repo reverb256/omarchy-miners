@@ -8,9 +8,9 @@ Unit names are DATA, never derived. Each host names its miners its own way:
           -> peakminer-3060ti.service, peakminer-3090.service
   nexus   Omarchy (converted from NixOS). Hand-managed unit.
           -> peakminer-nexus-3060ti.service
-  forge   NixOS. Persistent units peakminer-forge-4060-0/1.service whose
-          ExecStart is redirected by a /usr/local/lib/systemd/system drop-in
-          (bump.conf -> imp.sh -> hand-installed binary in /home/j_kro).
+  forge   Omarchy (reinstalled 2026-09-17). Persistent units
+          peakminer-forge-4060-0/1.service with a direct ExecStart:
+          /usr/local/bin/peakminer (fleet-consistent binary), no drop-ins.
           The old transient systemd-run drop-ins are dead: stopping one
           deletes it (the panel could never restart it), and reboots lose
           them — do not bring them back.
@@ -39,9 +39,6 @@ from __future__ import annotations
 #   platform  "linux" (default) or "windows" (NSSM services)
 #   kind      "peakminer" (default) or "kryptex" (the Kryptex app rig)
 #   control   "none" makes a host monitor-only (no unit to start/stop)
-#   transient units are created via systemd-run, not as persistent files (forge)
-#   script    path to the imp.sh script on the host (transient units only)
-#   conflicts unit to Conflicts= against so the Nix unit stays dormant (transient)
 FLEET = {
     "zephyr": {
         "ip": "localhost",
@@ -80,7 +77,9 @@ FLEET = {
         ],
     },
     "forge": {
-        "ip": "10.1.1.130",
+        # Tailnet address since the Omarchy install: LAN :22 refuses and the
+        # old 10.1.1.130 path no longer answers.
+        "ip": "100.85.63.36",
         "ssh": "forge",
         "local": False,
         "user": "j_kro",

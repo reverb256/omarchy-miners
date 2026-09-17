@@ -9,8 +9,8 @@ Unit names are DATA, not derived. Each host owns its own naming:
 
   zephyr  Omarchy, units hand-managed in /etc/systemd/system
           -> peakminer-3060ti.service, peakminer-3090.service
-  nexus   NixOS, services.peakminer instances
-  forge   NixOS, persistent units
+  nexus   Omarchy, service peakminer-nexus-3060ti (systemd)
+  forge   Omarchy, persistent units
           -> peakminer-forge-4060-0.service, peakminer-forge-4060-1.service
   krash2  Windows 11, NSSM service (krash2 SSH alias, user 'krash')
           -> pearlhash (NSSM service name)
@@ -31,10 +31,12 @@ Samples average works.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,6 +52,13 @@ SSH_OPTIONS = [
     # (kex_exchange_identification: Connection reset by peer) and every probe
     # after the first fails.
     "-o", "ServerAliveInterval=5",
+    # Multiplexing: every bar on every monitor runs its own copy of this
+    # poller, so sessions to one host overlap several times a minute. One
+    # shared master connection removes the connect/kex/auth churn (Windows
+    # sshd resets sessions under it) and makes repeat probes much faster.
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath=/run/user/{os.getuid()}/ssh-miners-%C",
+    "-o", "ControlPersist=60",
 ]
 
 # The fleet definition lives in fleet.py so poll.py and miner-control cannot
@@ -84,7 +93,7 @@ def query_host_over_ssh(config):
     """
     ports = [miner["port"] for miner in config["miners"]]
     if not ports or not shutil.which("ssh"):
-        return {}
+        return None
 
     # Windows hosts run PowerShell as their SSH shell, where `curl` is an
     # alias for `Invoke-WebRequest` and fails. Wrap curl.exe in cmd /c so
@@ -112,7 +121,13 @@ def query_host_over_ssh(config):
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return {}
+        return None  # ssh never completed: the host, not its miner, is down
+
+    if completed.returncode == 255:
+        # ssh's own convention: 255 is the connection/auth layer failing. The
+        # remote command's exit codes (curl's 7 when a miner port is closed,
+        # say) pass through unchanged and still prove the host is up.
+        return None
 
     results = {}
     stdout_lines = (completed.stdout or "").splitlines()
@@ -156,6 +171,22 @@ def query_host_over_ssh(config):
     return results
 
 
+def _ssh_ok(config):
+    """True when one trivial command runs over ssh (reachability only)."""
+    target = config.get("ssh") or f"{config['user']}@{config['ip']}"
+    try:
+        completed = subprocess.run(
+            ["ssh", *SSH_OPTIONS, target, "echo KR-OK"],
+            capture_output=True,
+            text=True,
+            timeout=SSH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return completed.returncode == 0
+
+
 def query_kryptex_rig(config):
     """Read the Kryptex app rig (krash3) in one pass.
 
@@ -176,7 +207,9 @@ def query_kryptex_rig(config):
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             srb = json.loads(response.read().decode())
     except Exception:
-        return {}
+        # No SRBMiner listener. The rig is only unreachable if ssh also fails:
+        # the Kryptex app being closed must not read as "host down".
+        return {} if _ssh_ok(config) else None
 
     algorithm = next(iter(srb.get("algorithms") or []), {})
     hashrate = algorithm.get("hashrate") or {}
@@ -366,7 +399,7 @@ def poll_fleet():
                 try:
                     remote_summaries[name] = future.result()
                 except Exception:
-                    remote_summaries[name] = {}
+                    remote_summaries[name] = None
 
     # Fetch nvidia-smi power readings in parallel with summaries.
     # Some peakminer builds report power_w: null from their API; nvidia-smi
@@ -397,8 +430,11 @@ def poll_fleet():
         host_hashrate = 0.0
         host_power = 0.0
         host_online = 0
-        host_summaries = remote_summaries.get(host, {})
-        reachable = config.get("local") or bool(host_summaries)
+        probe_result = remote_summaries.get(host)
+        host_summaries = probe_result or {}
+        # A host ssh answered is reachable even when its miner replied
+        # nothing: "miner stopped" and "host down" are different states.
+        reachable = config.get("local") or probe_result is not None
         host_nvidia = nvidia_power.get(host, [])
 
         for i, entry in enumerate(config["miners"]):
@@ -491,9 +527,110 @@ def poll_fleet():
     }
 
 
-if __name__ == "__main__":
+CACHE_PATH = f"/run/user/{os.getuid()}/miners-poll-cache.json"
+LOCK_PATH = f"/run/user/{os.getuid()}/miners-poll.lock"
+CACHE_MAX_AGE_SECONDS = 5.0
+SIBLING_WAIT_SECONDS = 16.0
+
+
+def _read_cache(max_age, born_after=None):
+    """Return the cached poll text when it is fresh enough.
+
+    `born_after` additionally requires the cache to be newer than that
+    timestamp, so a waiter never mistakes an older cycle's result for the
+    sibling poller's fresh one.
+    """
     try:
-        print(json.dumps(poll_fleet(), indent=2))
+        mtime = os.path.getmtime(CACHE_PATH)
+        if time.time() - mtime < max_age and (born_after is None or mtime >= born_after):
+            with open(CACHE_PATH, encoding="utf-8") as handle:
+                return handle.read()
+    except OSError:
+        pass
+    return None
+
+
+def _try_lock():
+    """Exclusive non-blocking lock; None when another poller already holds it."""
+    import fcntl
+
+    fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def _write_cache(text):
+    try:
+        tmp = CACHE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, CACHE_PATH)
+    except OSError:
+        pass
+
+
+def _audit(payload, millis):
+    """Record what this run saw, for multi-instance bar diagnostics.
+
+    Every bar on every monitor owns a Main instance with its own poller, so
+    several runs overlap. This log shows what each concurrent run observed.
+    """
+    try:
+        import os as _os
+
+        try:
+            parent = open(f"/proc/{_os.getppid()}/comm").read().strip()
+        except OSError:
+            parent = "?"
+        hosts = (payload or {}).get("hosts") or {}
+        reach = ",".join(
+            f"{name}:{'up' if config.get('reachable') else 'DOWN'}"
+            for name, config in hosts.items()
+        )
+        with open("/tmp/miners-poll-audit.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                f"{time.strftime('%H:%M:%S')} pid={_os.getpid()} parent={parent} "
+                f"wall={millis}ms {reach or 'NO-DATA'}\n"
+            )
+    except Exception:  # noqa: BLE001 - diagnostics must never break the panel
+        pass
+
+
+if __name__ == "__main__":
+    # Every monitor's bar owns a poller and they fire at the same instant.
+    # One does the real ssh round trips; the rest wait for its result. That
+    # keeps heavy work out of the shell and leaves sshd alone.
+    cached = _read_cache(CACHE_MAX_AGE_SECONDS)
+    if cached is not None:
+        print(cached)
+        sys.exit(0)
+
+    started = time.time()
+    lock = _try_lock()
+    if lock is None:
+        deadline = started + SIBLING_WAIT_SECONDS
+        while time.time() < deadline:
+            time.sleep(0.35)
+            cached = _read_cache(SIBLING_WAIT_SECONDS, born_after=started)
+            if cached is not None:
+                print(cached)
+                sys.exit(0)
+        # The sibling is stuck; run our own poll rather than starve the panel.
+
+    try:
+        payload = poll_fleet()
+        _audit(payload, int((time.time() - started) * 1000))
+        text = json.dumps(payload, indent=2)
+        _write_cache(text)
+        print(text)
     except Exception as error:  # noqa: BLE001 - the panel renders the reason
+        _audit(None, int((time.time() - started) * 1000))
         print(json.dumps({"error": str(error)}))
         sys.exit(1)
+    finally:
+        if lock is not None:
+            os.close(lock)  # releasing the fd drops the flock
