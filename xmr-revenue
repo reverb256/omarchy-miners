@@ -22,9 +22,11 @@ Output: one JSON document on stdout, always exit 0. Failures come back as
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
 import json
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 API_BASE = "https://pool.kryptex.com"
@@ -36,8 +38,87 @@ BLOCK_TIME = 120.0        # seconds
 USER_AGENT = "omarchy-miners/2.1 (+https://github.com/reverb256/omarchy-miners)"
 TIMEOUT = 10
 
+# The pool answers non-browser clients with an anti-bot page (HTTP 200 + JS).
+# Clearing it needs the page's own jhash math and a browser-shaped User-Agent;
+# requests that carry the tool UA get re-challenged forever.
+BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+CHALLENGE_ROUNDS = 4
+CHALLENGE_PAUSE = 1.5
+
+
+def _get_jhash(b: int) -> int:
+    """Python port of the pool challenge page's get_jhash(b)."""
+    x = 123456789
+    k = 0
+    for i in range(1677696):
+        x = ((x + b) ^ (x + (x % 3) + (x % 17) + b) ^ i) % 16776960
+        if x % 117 == 0:
+            k = (k + 1) % 1111
+    return k
+
+
+class KryptexSession:
+    """Pool session that clears Kryptex's __jhash_ JS challenge.
+
+    The challenge page sets __js_p_=<code>,... and expects the client to add
+    __jhash_=get_jhash(code) and __jua_=<url-encoded User-Agent>; the retry
+    then 302s with the __hash_ clearance cookie, and later requests are JSON.
+    A cookie jar plus the jhash port does this headlessly in ~0.2 s.
+    """
+
+    def __init__(self, user_agent: str):
+        self.user_agent = user_agent
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.jar))
+
+    def _get(self, url: str) -> str:
+        request = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json",
+                     "User-Agent": self.user_agent},
+        )
+        with self.opener.open(request, timeout=TIMEOUT) as response:
+            return response.read().decode(errors="replace")
+
+    def _solve(self) -> None:
+        cookie = next((c for c in self.jar if c.name == "__js_p_"), None)
+        if cookie is None:
+            raise ValueError("challenge page without __js_p_ cookie")
+        code = int(str(cookie.value).split(",")[0])
+        expires = time.time() + 1800
+        ua_encoded = urllib.parse.quote(self.user_agent, safe="")
+        for name, value in (("__jhash_", str(_get_jhash(code))),
+                            ("__jua_", ua_encoded)):
+            self.jar.set_cookie(http.cookiejar.Cookie(
+                0, name, value, None, False, "pool.kryptex.com", False, False,
+                "/", True, False, expires, False, None, None, {}))
+
+    def get_json(self, url: str):
+        """GET url as JSON, solving the challenge when the pool sends it."""
+        body = ""
+        for attempt in range(CHALLENGE_ROUNDS):
+            body = self._get(url)
+            if not body.lstrip().startswith("<"):
+                return json.loads(body)
+            if attempt:
+                # Occasional double-challenges clear after a short beat.
+                time.sleep(CHALLENGE_PAUSE)
+            self._solve()
+        raise ValueError(f"kryptex challenge not cleared ({body[:40]!r})")
+
+
+_POOL_SESSION = None
+
 
 def fetch_json(url: str):
+    """GET url as JSON. Pool requests ride a challenge-solving session."""
+    global _POOL_SESSION
+    if url.startswith(API_BASE):
+        if _POOL_SESSION is None:
+            _POOL_SESSION = KryptexSession(BROWSER_UA)
+        return _POOL_SESSION.get_json(url)
     request = urllib.request.Request(
         url,
         headers={"Accept": "application/json", "User-Agent": USER_AGENT},
