@@ -67,4 +67,7 @@ python3 ./prl-revenue --hashrate 1000000000000 |
   python3 -c "import sys,json;d=json.load(sys.stdin);print('ok' if d.get('rateCoinsPerHsDay',0)>0 and d.get('price',0)>0 else 'FAIL:'+str(d.get('error','')))"
 
 printf 'G20 krash3 rig readable    : '
-python3 ./poll.py | python3 -c "import sys,json;d=json.load(sys.stdin);m=[x for x in d.get('miners',[]) if x['host']=='krash3'];print('ok' if m and m[0]['online'] and m[0]['hashrate']>0 else 'FAIL:'+json.dumps(m))"
+# The rig's mining is toggled on/off by the box's user (gaming machine), so an
+# idle rig is a normal state: readability = the row is present and the host
+# answered. The mining state prints as info (ok (idle) vs ok (mining)).
+python3 ./poll.py | python3 -c "import sys,json;d=json.load(sys.stdin);m=[x for x in d.get('miners',[]) if x['host']=='krash3'];ok=bool(m) and m[0]['hostReachable'];print(('ok (mining)' if m[0]['hashrate']>0 else 'ok (idle)') if ok else 'FAIL:'+json.dumps(m))"
