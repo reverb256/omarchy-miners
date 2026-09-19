@@ -207,18 +207,24 @@ def query_kryptex_rig(config):
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             srb = json.loads(response.read().decode())
     except Exception:
-        # No SRBMiner listener. The rig is only unreachable if ssh also fails:
-        # the Kryptex app being closed must not read as "host down".
-        return {} if _ssh_ok(config) else None
+        # No SRBMiner listener. If ssh also fails, the host is truly down.
+        if not _ssh_ok(config):
+            return None
+        # SRBMiner is gone but the host reachable: krash3 may now run xmrig
+        # only (the Kryptex app GPU miner was removed). Fall through to gather
+        # xmrig + nvidia-smi data so the row stays informative.
+        srb = None
 
-    algorithm = next(iter(srb.get("algorithms") or []), {})
+    # srb is None when the Kryptex GPU miner is absent (krash3 now runs xmrig
+    # only). Fall through with zeroed PRL figures so the xmrig readout still populates.
+    algorithm = next(iter((srb or {}).get("algorithms") or []), {})
     hashrate = algorithm.get("hashrate") or {}
     prl_hashrate = number(
         hashrate.get("1min")
         or hashrate.get("1hr")
         or (hashrate.get("gpu") or {}).get("total")
     )
-    gpu_stats = next(iter(srb.get("gpu_devices") or []), {})
+    gpu_stats = next(iter((srb or {}).get("gpu_devices") or []), {})
 
     model = str(gpu_stats.get("model") or "").replace("_", " ")
     name = " ".join(
@@ -281,7 +287,7 @@ def query_kryptex_rig(config):
 
     return {
         port: {
-            "version": f"kryptex-app {srb.get('miner_version', '')}".strip(),
+            "version": f"kryptex-app {(srb or {}).get('miner_version', '')}".strip(),
             "hashrate": prl_hashrate,
             "gpus": [
                 {
