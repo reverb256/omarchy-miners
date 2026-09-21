@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
-"""Control one peakminer unit. The panel's only privileged entry point.
+"""Control one peakminer miner. The panel's only privileged entry point.
 
-The panel never builds a systemctl command itself: it calls
+The panel never builds a control command itself: it calls
 
     miner-control <start|stop|restart|status> <host> <unit>
 
 and this script resolves the host, checks the unit against the fleet
-definition, and runs systemctl locally or over ssh. Refusing an unknown
-host/unit pair keeps a bad panel binding from reaching systemctl at all.
+definition, and runs the right control path:
 
-Forge runs standard persistent units — no transient drop-ins, no systemd-run.
+  * k3s (the five Linux miners since 2026-09-21): kubectl scale /
+    rollout restart on deployment <k8s.deploy> in namespace <k8s.ns>.
+    Runtime control only — config lives in git (reverb256/mining-k8s) + ArgoCD.
+  * systemd (rollback path, and any miner without a k8s mapping): systemctl
+    locally or over ssh.
+  * Windows NSSM (krash2): nssm over ssh.
+
+Refusing an unknown host/unit pair keeps a bad panel binding from reaching
+any control surface at all.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +35,7 @@ from fleet import FLEET  # noqa: E402
 
 ACTIONS = ("start", "stop", "restart", "status")
 SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+KUBECONFIG = str(Path.home() / ".kube" / "config")
 
 
 def fail(message, code=1):
@@ -33,14 +43,50 @@ def fail(message, code=1):
     sys.exit(code)
 
 
-def build_command(host, unit, action):
+def find_miner(host, unit):
     config = FLEET.get(host)
     if not config:
         fail(f"Unknown host: {host}")
+    for miner in config["miners"]:
+        if miner["unit"] == unit:
+            return config, miner
+    fail(f"Unknown unit for {host}: {unit}")
 
-    known = {miner["unit"] for miner in config["miners"]}
-    if unit not in known:
-        fail(f"Unknown unit for {host}: {unit}")
+
+def kubectl_bin():
+    found = shutil.which("kubectl")
+    if found:
+        return found
+    # mise-managed installs (the panel may run without shims on PATH)
+    candidates = sorted(Path.home().glob(".local/share/mise/installs/kubectl/*/kubectl"))
+    if candidates:
+        return str(candidates[-1])
+    for fallback in ("/usr/local/bin/kubectl", "/usr/bin/kubectl"):
+        if os.path.exists(fallback):
+            return fallback
+    fail("kubectl not found — cannot control k3s-managed miners")
+
+
+def build_k8s_command(k8s, action):
+    deploy = k8s["deploy"]
+    ns = k8s.get("ns", "mining")
+    kubectl = kubectl_bin()
+    if action == "status":
+        # readyReplicas is "" when scaled to zero -> inactive (mirrors is-active)
+        return [kubectl, "-n", ns, "get", "deploy", deploy,
+                "-o", "jsonpath={.status.readyReplicas}"]
+    if action == "restart":
+        return [kubectl, "-n", ns, "rollout", "restart", f"deploy/{deploy}"]
+    replicas = "1" if action == "start" else "0"
+    return [kubectl, "-n", ns, "scale", f"deploy/{deploy}", f"--replicas={replicas}"]
+
+
+def build_command(host, unit, action, miner):
+    config = FLEET.get(host)
+
+    k8s = miner.get("k8s")
+    if k8s:
+        return build_k8s_command(k8s, action), "k8s"
 
     # The Kryptex app rig is monitor-only: there is no unit behind the name,
     # so never let a stray panel binding reach a control command.
@@ -51,7 +97,6 @@ def build_command(host, unit, action):
 
     if is_windows:
         # Windows NSSM services: nssm <action> <service>
-        # NSSM actions: start, stop, restart, status
         if action == "status":
             remote = ["cmd", "/c", f"nssm status {unit}"]
         else:
@@ -63,17 +108,17 @@ def build_command(host, unit, action):
             remote = ["systemctl", action, unit]
 
     if config.get("local"):
-        return remote
+        return remote, "systemd"
     # Remote hosts have no local session to authorize against, so they do need
     # sudo. Target the ssh ALIAS, not the IP: ~/.ssh/config maps the aliases to
     # the touchless key, while the raw IP falls through to `Host *` and fails
     # with "Permission denied (publickey)".
     target = config.get("ssh") or f"{config['user']}@{config['ip']}"
     if is_windows:
-        return ["ssh", *SSH_OPTIONS, target, " ".join(remote)]
+        return ["ssh", *SSH_OPTIONS, target, " ".join(remote)], "nssm"
     if action == "status":
-        return ["ssh", *SSH_OPTIONS, target, " ".join(remote)]
-    return ["ssh", *SSH_OPTIONS, target, "sudo " + " ".join(remote)]
+        return ["ssh", *SSH_OPTIONS, target, " ".join(remote)], "systemd"
+    return ["ssh", *SSH_OPTIONS, target, "sudo " + " ".join(remote)], "systemd"
 
 
 def main():
@@ -88,12 +133,17 @@ def main():
         fail(f"Unknown host: {args.host}")
 
     is_windows = config.get("platform") == "windows"
-
     if is_windows:
         unit = args.unit  # NSSM service names have no .service suffix
     else:
         unit = args.unit if args.unit.endswith(".service") else f"{args.unit}.service"
-    command = build_command(args.host, unit, args.action)
+
+    config, miner = find_miner(args.host, unit)
+    command, mode = build_command(args.host, unit, args.action, miner)
+
+    env = dict(os.environ)
+    if mode == "k8s":
+        env["KUBECONFIG"] = env.get("KUBECONFIG") or KUBECONFIG
 
     try:
         completed = subprocess.run(
@@ -102,6 +152,7 @@ def main():
             text=True,
             timeout=30,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         fail(f"Timed out running {args.action} on {args.host}")
@@ -115,12 +166,19 @@ def main():
     # than a failure. Every other action treats a non-zero exit as an error.
     ok = completed.returncode == 0 or args.action == "status"
 
+    state = output
+    if mode == "k8s" and args.action == "status":
+        # Map the replica count to the systemctl-style vocabulary the panel
+        # expects: readyReplicas >= 1 -> "active", "" (scaled to 0) -> "inactive".
+        state = "active" if output and output != "0" else "inactive"
+
     print(json.dumps({
         "ok": ok,
         "action": args.action,
         "host": args.host,
         "unit": unit,
-        "state": output,
+        "mode": mode,
+        "state": state,
         "error": "" if ok else (error or f"exit {completed.returncode}"),
     }))
     sys.exit(0 if ok else completed.returncode)

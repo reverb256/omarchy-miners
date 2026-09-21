@@ -29,6 +29,13 @@ The old transient drop-in path (systemd-run + imp.sh scripts) is dead.
 Deriving a unit from the API port (what this plugin used to do) matched no
 unit on any host, so every pause silently did nothing. Verify a name against
 the host with `systemctl is-active <unit>` before you change it here.
+
+k3s MIGRATION (2026-09-21): the five Linux miners now run as k3s Deployments
+in namespace `mining` (repo reverb256/mining-k8s + ArgoCD, root app
+`mining-helm`). Each of those miners carries a "k8s" mapping; when present,
+miner-control routes start/stop/restart/status through kubectl (runtime
+control only — config changes go through git + ArgoCD). The systemd units are
+stopped+disabled and remain the documented rollback path.
 """
 
 from __future__ import annotations
@@ -48,12 +55,14 @@ FLEET = {
             {
                 "port": 21553,
                 "unit": "peakminer-3060ti.service",
+                "k8s": {"ns": "mining", "deploy": "peakminer-zephyr-3060ti"},
                 "label": "RTX 3060 Ti",
                 "powerLimit": 120,
             },
             {
                 "port": 21554,
                 "unit": "peakminer-3090.service",
+                "k8s": {"ns": "mining", "deploy": "peakminer-zephyr-3090"},
                 "label": "RTX 3090",
                 "powerLimit": 250,
             },
@@ -71,6 +80,7 @@ FLEET = {
                 # Verified with `systemctl list-units` on the host: the unit is
                 # hand-managed under Omarchy, not a NixOS drop-in.
                 "unit": "peakminer-nexus-3060ti.service",
+                "k8s": {"ns": "mining", "deploy": "peakminer-nexus-3060ti"},
                 "label": "RTX 3060 Ti",
                 "powerLimit": 120,
             },
@@ -90,12 +100,14 @@ FLEET = {
             {
                 "port": 21550,
                 "unit": "peakminer-forge-4060-0.service",
+                "k8s": {"ns": "mining", "deploy": "peakminer-forge-4060-0"},
                 "label": "RTX 4060 #1",
                 "powerLimit": 118,
             },
             {
                 "port": 21552,
                 "unit": "peakminer-forge-4060-1.service",
+                "k8s": {"ns": "mining", "deploy": "peakminer-forge-4060-1"},
                 "label": "RTX 4060 #2",
                 "powerLimit": 115,
             },

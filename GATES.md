@@ -18,8 +18,8 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G10b | Reads the Windows unit | `miner-control status krash2 pearlhash` | `True` |
 | G12 | Plugin present in shell.json | `grep -c io.github.jkro.miners ~/.config/omarchy/shell.json` | `>= 1` |
 | G13 | Running shell discovers it | `listPlugins` on the RUNNING shell's config path (pgrep-derived; falls back to `/usr/share/omarchy/shell`). This box runs a custom clone at `~/omarchy/shell`. | `1` |
-| G15 | zephyr 3060 Ti unit live | `systemctl is-active peakminer-3060ti.service` | `active` |
-| G16 | zephyr 3090 unit live | `systemctl is-active peakminer-3090.service` | `active` |
+| G15 | zephyr 3060 Ti live (k3s) | `miner-control status zephyr peakminer-3060ti.service` — routes to the k3s Deployment | `ok (active)` |
+| G16 | zephyr 3090 live (k3s) | `miner-control status zephyr peakminer-3090.service` | `ok (active)` |
 | G17 | forge 4060-0 controllable | `miner-control status forge peakminer-forge-4060-0.service` | `True` |
 | G18 | forge 4060-1 controllable | `miner-control status forge peakminer-forge-4060-1.service` | `True` |
 | G19 | Revenue feed works | `./prl-revenue --hashrate 1000000000000` returns `rateCoinsPerHsDay` and `price` | `ok` |
@@ -30,6 +30,12 @@ ExecStart is redirected by a `/usr/local/lib/systemd/system` drop-in
 (`bump.conf` → `imp.sh`). The transient systemd-run drop-in path is dead:
 stopping a transient unit deletes it, so the panel could never start a paused
 miner again. Keep the units in step with `fleet.py`.
+
+k3s MIGRATION (2026-09-21): all five Linux miners run as k3s Deployments in
+namespace `mining` (repo reverb256/mining-k8s + ArgoCD `mining-helm`).
+`miner-control` routes their start/stop/restart/status through kubectl
+(runtime control only; config = git + ArgoCD). The systemd units above are
+stopped+disabled and are the rollback path.
 
 ## Running the gates
 

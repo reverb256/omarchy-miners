@@ -48,11 +48,13 @@ QS_PATH=$(pgrep -a quickshell 2>/dev/null | sed -n 's/.*-p \([^ ]*\).*/\1/p' | h
 quickshell ipc -p "$QS_PATH" call shell listPlugins 2>/dev/null |
   grep -c io.github.jkro.miners
 
-printf 'G15 zephyr 3060ti          : '
-systemctl is-active peakminer-3060ti.service
+printf 'G15 zephyr 3060ti (k3s)    : '
+python3 ./miner-control status zephyr peakminer-3060ti.service |
+  python3 -c "import sys,json;d=json.load(sys.stdin);print('ok ('+d.get('state','?')+')' if d.get('ok') else 'FAIL:'+str(d.get('error')))"
 
-printf 'G16 zephyr 3090            : '
-systemctl is-active peakminer-3090.service
+printf 'G16 zephyr 3090 (k3s)      : '
+python3 ./miner-control status zephyr peakminer-3090.service |
+  python3 -c "import sys,json;d=json.load(sys.stdin);print('ok ('+d.get('state','?')+')' if d.get('ok') else 'FAIL:'+str(d.get('error')))"
 
 printf 'G17 forge 4060-0           : '
 python3 ./miner-control status forge peakminer-forge-4060-0.service |

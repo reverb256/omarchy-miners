@@ -20,9 +20,9 @@ The fleet is defined in `fleet.py` — one source of truth for the panel and CLI
 
 | Host | Platform | Units |
 |------|----------|-------|
-| zephyr | Omarchy | peakminer-3060ti.service, peakminer-3090.service |
-| nexus | Omarchy | peakminer-nexus-3060ti.service |
-| forge | Omarchy | Persistent units (`peakminer-forge-4060-0/1.service`), hand-installed |
+| zephyr | Omarchy | k3s `peakminer-zephyr-3060ti`, `peakminer-zephyr-3090` (rollback units: peakminer-3060ti.service, peakminer-3090.service) |
+| nexus | Omarchy | k3s `peakminer-nexus-3060ti` (rollback unit: peakminer-nexus-3060ti.service) |
+| forge | Omarchy | k3s `peakminer-forge-4060-0/1` (rollback units: peakminer-forge-4060-0/1.service) |
 | krash2 | Windows 11 | pearlhash (NSSM service) |
 | krash3 | Windows 11 | Kryptex desktop app — **monitor-only** (no unit) |
 
@@ -57,7 +57,7 @@ per-coin; the price caption lists both pool rates.
 
 ## Security
 
-- **Service management**: The plugin manages systemd services (start/stop/restart/status) on local and remote hosts. Units are validated against the fleet definition before any systemctl call.
+- **Service management**: The plugin manages miners through `miner-control` (start/stop/restart/status). The five Linux miners are k3s Deployments (namespace `mining`) — control routes through kubectl (runtime only; config = git + ArgoCD, repo `reverb256/mining-k8s`). Non-migrated units fall back to systemd/NSSM. Targets are validated against the fleet definition before any control call.
 - **Privilege**: Local hosts use polkit (no sudo). Remote hosts use `sudo systemctl` over SSH with touchless key auth (no password prompt).
 - **No secrets in argv**: All SSH connections use key-based auth via `~/.ssh/config` aliases. The market-data fetches need no API key.
 - **Bounded output**: All subprocess calls have timeouts and bounded output.
