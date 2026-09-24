@@ -73,3 +73,12 @@ printf 'G20 krash3 rig readable    : '
 # idle rig is a normal state: readability = the row is present and the host
 # answered. The mining state prints as info (ok (idle) vs ok (mining)).
 python3 ./poll.py | python3 -c "import sys,json;d=json.load(sys.stdin);m=[x for x in d.get('miners',[]) if x['host']=='krash3'];ok=bool(m) and m[0]['hostReachable'];print(('ok (mining)' if m[0]['hashrate']>0 else 'ok (idle)') if ok else 'FAIL:'+json.dumps(m))"
+
+printf 'G21 control failover       : '
+# The pinned apiserver (kubeconfig server) is dead; the action must still land
+# via a peer. 2026-09-24 nexus-k3s outage regression lock.
+BADCFG=$(mktemp)
+sed 's|https://[0-9.]*:6443|https://10.1.1.199:6443|' ~/.kube/config > "$BADCFG"
+KUBECONFIG="$BADCFG" python3 ./miner-control status zephyr peakminer-3060ti.service 2>/dev/null |
+  python3 -c "import sys,json;d=json.load(sys.stdin);print('ok (failover)' if d.get('ok') and d.get('state')=='active' else 'FAIL:'+str(d))"
+rm -f "$BADCFG"

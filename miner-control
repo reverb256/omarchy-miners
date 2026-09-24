@@ -22,9 +22,11 @@ any control surface at all.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +38,95 @@ from fleet import FLEET  # noqa: E402
 ACTIONS = ("start", "stop", "restart", "status")
 SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
 KUBECONFIG = str(Path.home() / ".kube" / "config")
+
+# --- k8s API endpoint failover -------------------------------------------------
+# The kubeconfig pins ONE apiserver (nexus on this host). During the 2026-09-24
+# nexus-k3s outage every panel pause/start silently failed while the cluster
+# itself stayed healthy on the other control-planes. After a connectivity-class
+# failure, probe the peers in order and retry the action once against the first
+# live one. Probe = "does anything answer TLS on 6443": the apiserver requires
+# auth even for /readyz, so ANY HTTP response (401 included) proves it is up.
+# Test override: MINER_K8S_ENDPOINTS="10.1.1.199:6443,10.1.1.100:6443"
+K8S_API_CANDIDATES = (
+    "10.1.1.100:6443",  # DNS_VIP - whichever control-plane holds it
+    "10.1.1.140:6443",  # sentry
+    "10.1.1.130:6443",  # forge
+    "10.1.1.120:6443",  # nexus
+)
+K8S_PROBE_TIMEOUT = 2.0
+UNREACHABLE_MARKERS = (
+    "connection refused",
+    "dial tcp",
+    "i/o timeout",
+    "context deadline exceeded",
+    "unable to connect to the server",
+    "no route to host",
+    "connection reset by peer",
+    "tls handshake timeout",
+    "network is unreachable",
+)
+
+
+def k8s_api_alive(hostport, timeout=K8S_PROBE_TIMEOUT):
+    """True when https://<hostport> answers at all (a 401 counts - it proves
+    an apiserver is listening; a dead one refuses or times out)."""
+    host, _, port = hostport.partition(":")
+    connection = None
+    try:
+        connection = http.client.HTTPSConnection(
+            host, int(port), timeout=timeout,
+            context=ssl._create_unverified_context(),
+        )
+        connection.request("GET", "/readyz")
+        connection.getresponse().read()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "endpoint dead"
+        return False
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def k8s_candidates():
+    raw = os.environ.get("MINER_K8S_ENDPOINTS")
+    if raw:
+        return tuple(item.strip() for item in raw.split(",") if item.strip())
+    return K8S_API_CANDIDATES
+
+
+def endpoint_unreachable(stderr):
+    text = (stderr or "").lower()
+    return any(marker in text for marker in UNREACHABLE_MARKERS)
+
+
+def run_k8s(command, env):
+    """Run kubectl; if its pinned endpoint is unreachable, retry once via peers."""
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=30, check=False, env=env
+        )
+    except subprocess.TimeoutExpired:
+        completed, reason = None, "kubectl timed out"
+    else:
+        if completed.returncode == 0 or not endpoint_unreachable(completed.stderr):
+            return completed
+        lines = (completed.stderr or "").strip().splitlines()
+        reason = lines[-1] if lines else f"kubectl exit {completed.returncode}"
+
+    for endpoint in k8s_candidates():
+        if not k8s_api_alive(endpoint):
+            continue
+        print(f"miner-control: {reason} — retrying via {endpoint}", file=sys.stderr)
+        retry = [command[0], "--server", f"https://{endpoint}", *command[1:]]
+        return subprocess.run(
+            retry, capture_output=True, text=True, timeout=30, check=False, env=env
+        )
+    if completed is not None:
+        return completed
+    raise subprocess.TimeoutExpired(command, 30)
 
 
 def fail(message, code=1):
@@ -146,14 +237,17 @@ def main():
         env["KUBECONFIG"] = env.get("KUBECONFIG") or KUBECONFIG
 
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            env=env,
-        )
+        if mode == "k8s":
+            completed = run_k8s(command, env)
+        else:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
     except subprocess.TimeoutExpired:
         fail(f"Timed out running {args.action} on {args.host}")
     except FileNotFoundError as error:
@@ -170,7 +264,12 @@ def main():
     if mode == "k8s" and args.action == "status":
         # Map the replica count to the systemctl-style vocabulary the panel
         # expects: readyReplicas >= 1 -> "active", "" (scaled to 0) -> "inactive".
-        state = "active" if output and output != "0" else "inactive"
+        # A kubectl failure (endpoint unreachable, RBAC) is "unknown", never
+        # "inactive" — a dead API must not read as a deliberate pause.
+        if completed.returncode != 0:
+            state = "unknown"
+        else:
+            state = "active" if output and output != "0" else "inactive"
 
     print(json.dumps({
         "ok": ok,

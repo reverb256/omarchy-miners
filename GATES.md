@@ -24,6 +24,15 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G18 | forge 4060-1 controllable | `miner-control status forge peakminer-forge-4060-1.service` | `True` |
 | G19 | Revenue feed works | `./prl-revenue --hashrate 1000000000000` returns `rateCoinsPerHsDay` and `price` | `ok` |
 | G20 | krash3 rig readable | `poll.py` reports the krash3 row with `hostReachable` true. The rig's mining is toggled on/off by the box's user (gaming machine), so idle prints as `ok (idle)` — only an unreachable host fails | `ok (mining)` / `ok (idle)` |
+| G21 | Control fails over | `miner-control status` with `KUBECONFIG` pointing at a dead server (10.1.1.199) — must land via a peer | `ok (failover)` |
+
+CONTROL-PATH FAILOVER (2026-09-24): the kubeconfig pins ONE apiserver, so the
+nexus-k3s outage made every panel start/stop fail while the cluster stayed
+healthy on sentry/forge. After a connectivity-class failure `miner-control`
+probes the peers in order — 10.1.1.100 (DNS_VIP), sentry, forge, nexus — and
+retries the action once against the first that answers. A status read against
+an unreachable API reports `state:unknown`, never a fake `inactive`. Test
+override: `MINER_K8S_ENDPOINTS="host:port,..."`.
 
 forge runs PERSISTENT units (`peakminer-forge-4060-0/1.service`) whose
 ExecStart is redirected by a `/usr/local/lib/systemd/system` drop-in
@@ -52,4 +61,5 @@ stopped+disabled and are the rollback path.
   `no live bar widget` right after an edit, wait a moment or run
   `omarchy-restart-shell`, then re-check.
 - `miner-control status` for a stopped unit returns `ok:true` with
-  `state:inactive` — that is a valid answer, not a failure.
+  `state:inactive` — that is a valid answer, not a failure. While no apiserver
+  is reachable it returns `state:unknown` — never a fake `inactive`.
