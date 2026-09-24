@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -43,6 +44,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TIMEOUT_SECONDS = 3
 SSH_TIMEOUT_SECONDS = 12
+HOST_NAME = socket.gethostname().split(".")[0]
+
+
+def is_local(name, config):
+    """An entry marked `local` is read locally ONLY on the host it names.
+
+    The widget runs on more than one machine (zephyr and nexus): on nexus,
+    zephyr is remote and must be read over its ssh alias.
+    """
+    return bool(config.get("local")) and name == HOST_NAME
 SSH_OPTIONS = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=6",
@@ -388,7 +399,7 @@ def poll_fleet():
     # Remote hosts are probed in parallel: each is one ssh round trip, and doing
     # them in sequence would make the panel's refresh wait for the sum.
     remote_summaries = {}
-    remote_hosts = [name for name, config in FLEET.items() if not config.get("local")]
+    remote_hosts = [name for name, config in FLEET.items() if not is_local(name, config)]
     if remote_hosts:
         with ThreadPoolExecutor(max_workers=len(remote_hosts)) as pool:
             # The Kryptex app rig has no /summary to read: it gets its own probe.
@@ -411,9 +422,9 @@ def poll_fleet():
     # Some peakminer builds report power_w: null from their API; nvidia-smi
     # Power Samples Avg is the fallback for those.
     nvidia_power = {}  # host_name -> [power_w_per_gpu]
-    local_config = FLEET.get("zephyr")
-    if local_config and local_config.get("local"):
-        nvidia_power["zephyr"] = fetch_nvidia_power_local()
+    local_config = FLEET.get(HOST_NAME)
+    if local_config and is_local(HOST_NAME, local_config):
+        nvidia_power[HOST_NAME] = fetch_nvidia_power_local()
 
     remote_power_hosts = [
         name for name in remote_hosts
@@ -440,12 +451,12 @@ def poll_fleet():
         host_summaries = probe_result or {}
         # A host ssh answered is reachable even when its miner replied
         # nothing: "miner stopped" and "host down" are different states.
-        reachable = config.get("local") or probe_result is not None
+        reachable = is_local(host, config) or probe_result is not None
         host_nvidia = nvidia_power.get(host, [])
 
         for i, entry in enumerate(config["miners"]):
             configured_count += 1
-            if config.get("local"):
+            if is_local(host, config):
                 summary = query_miner(config["ip"], entry["port"])
             else:
                 summary = host_summaries.get(entry["port"])
@@ -469,7 +480,7 @@ def poll_fleet():
             record = {
                 "host": host,
                 "ip": config["ip"],
-                "local": bool(config.get("local")),
+                "local": is_local(host, config),
                 "user": config.get("user", ""),
                 "unit": entry["unit"],
                 "port": entry["port"],
@@ -506,7 +517,7 @@ def poll_fleet():
 
         hosts[host] = {
             "ip": config["ip"],
-            "local": bool(config.get("local")),
+            "local": is_local(host, config),
             # Unreachable is a third state, distinct from "miner stopped": a host
             # we cannot ssh into tells us nothing about its miners.
             "reachable": bool(reachable),

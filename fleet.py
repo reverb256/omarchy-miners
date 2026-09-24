@@ -50,6 +50,10 @@ FLEET = {
     "zephyr": {
         "ip": "localhost",
         "local": True,
+        # Read locally only when the poller runs ON zephyr (is_local() in
+        # poll.py); from any other host it reads over this alias — the alias
+        # must exist in that host's ~/.ssh/config (nexus has it).
+        "ssh": "zephyr",
         "user": "j_kro",
         "miners": [
             {
