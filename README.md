@@ -67,7 +67,10 @@ per-coin; the price caption lists both pool rates.
 - **`BarWidget.qml`** — Bar entry point, owns the Main data instance
 - **`Panel.qml`** — Panel presentation and keyboard handling
 - **`Main.qml`** — Data model, owns the polling process and the revenue fetch
-- **`fleet.py`** — Fleet definition (one source of truth)
+- **`fleet.py`** — Fleet definition (one source of truth). `local: true`
+  entries are read locally only on the machine they name (zephyr); from any
+  other host they are read over their `ssh` alias — the widget runs on both
+  zephyr and nexus
 - **`poll.py`** — Polls all miners, emits JSON for QML binding
 - **`prl-revenue`** — Pool rate + PRL price → $/hour · $/day · $/month
 - **`xmr-revenue`** — Pool rate + XMR price → the krash3 CPU miner's $/day

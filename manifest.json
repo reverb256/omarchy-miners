@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jkro.miners",
   "name": "Miners",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "author": "j_kro",
   "license": "MIT",
   "description": "Fleet-wide GPU miner monitoring in the Omarchy bar: total hashrate plus a panel with per-GPU hashrate, power, temperature, pause/resume, and estimated PRL earnings from the live pool rate and PRL price.",
