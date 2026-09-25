@@ -35,9 +35,11 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -196,6 +198,122 @@ def _ssh_ok(config):
     except (subprocess.TimeoutExpired, OSError):
         return False
     return completed.returncode == 0
+
+
+# The metrics broker. miner-telemetry (a DaemonSet on nexus/forge, plus the
+# nexus -> zephyr remote-pull unit) feeds VictoriaMetrics; reading the broker
+# means no ssh fan-out from every bar for the hosts it covers. j_kro's rule:
+# use the proper data pipeline, ssh is only for what the broker does not cover
+# (the two Windows boxes).
+VM_QUERY_URL = "https://mining.lan/vm/api/v1/query"
+VM_FRESH_SECONDS = 240
+VM_METRICS = [
+    "miner_up",
+    "miner_hashrate_hs",
+    "miner_power_watts",
+    "miner_gpu_hashrate_hs",
+    "miner_gpu_power_watts",
+    "miner_gpu_temperature_celsius",
+    "miner_gpu_fan_percent",
+    "miner_gpu_utilization_percent",
+]
+
+
+def query_vm_summaries():
+    """Read every broker-covered miner in ONE VictoriaMetrics query.
+
+    Returns {(host, port): peakminer-shaped summary} for series fresh within
+    VM_FRESH_SECONDS. An empty dict (broker down, stale series, host absent)
+    makes the caller fall through to the ssh/local path — the panel never
+    depends on the broker being up, it just prefers it.
+    """
+    context = ssl._create_unverified_context()  # internal .lan endpoint
+    # One label-match query, NOT `metric or metric`: MetricsQL's `or` drops
+    # right-side series whose labels (ignoring __name__) collide with a
+    # left-side one — miner_gpu_* share their label set, so `or` returned a
+    # fraction of the metrics. The regex keeps every series and its name.
+    selector = '{__name__=~"%s"}' % "|".join(VM_METRICS)
+    url = f"{VM_QUERY_URL}?query={urllib.parse.quote(selector)}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=6, context=context) as response:
+        payload = json.loads(response.read().decode())
+
+    now = time.time()
+    per_instance = {}
+    for series in (payload.get("data") or {}).get("result") or []:
+        try:
+            timestamp = float(series["value"][0])
+            value = float(series["value"][1])
+        except (KeyError, IndexError, ValueError):
+            continue
+        if now - timestamp > VM_FRESH_SECONDS:
+            continue  # stale sample: the collector, not the miner, is dead
+        metric = series.get("metric") or {}
+        instance = metric.get("instance") or ""
+        if ":" not in instance:
+            continue
+        host, _, port_text = instance.rpartition(":")
+        if not port_text.isdigit():
+            continue
+        port = int(port_text)
+        entry = per_instance.setdefault(
+            (host, port), {"device": {}, "gpus": {}, "model": metric.get("model", "")}
+        )
+        gpu = metric.get("gpu")
+        if gpu is None:
+            entry["device"][metric.get("__name__", "")] = value
+        else:
+            slot = entry["gpus"].setdefault(str(gpu), {})
+            slot[metric.get("__name__", "")] = value
+            slot.setdefault("__model", metric.get("model", ""))
+
+    summaries = {}
+    for (host, port), entry in per_instance.items():
+        gpus = []
+        for gpu_id, slot in sorted(entry["gpus"].items()):
+            gpus.append({
+                "id": int(gpu_id) if gpu_id.isdigit() else 0,
+                "name": slot.get("__model") or entry.get("model", ""),
+                "hashrate": number(slot.get("miner_gpu_hashrate_hs")),
+                "power_w": number(slot.get("miner_gpu_power_watts")),
+                "temperature_c": number(slot.get("miner_gpu_temperature_celsius")),
+                "fan_pct": number(slot.get("miner_gpu_fan_percent")),
+                "utilization_pct": number(slot.get("miner_gpu_utilization_percent")),
+            })
+        gpu_total = sum(gpu["hashrate"] for gpu in gpus)
+        summaries[(host, port)] = {
+            "hashrate": number(entry["device"].get("miner_hashrate_hs"), gpu_total),
+            "power_w": number(entry["device"].get("miner_power_watts")),
+            "gpus": gpus,
+        }
+    return summaries
+
+
+def broker_covered(vm_summaries, deploy_replicas):
+    """Hosts whose live (non-paused) ports all have fresh broker data.
+
+    Returns {host: {port: summary}}. A host qualifies only as a whole: a
+    partial answer would mix broker and ssh reads for one host, which is how
+    a row ends up half-updated. Paused ports (replicas == 0) need no live
+    data — the row renders from user intent alone.
+    """
+    covered = {}
+    for host, config in FLEET.items():
+        if not config["miners"]:
+            continue
+        live_ports = {}
+        complete = True
+        for miner in config["miners"]:
+            k8s = miner.get("k8s") or {}
+            if k8s and deploy_replicas.get(k8s.get("deploy", "")) == 0:
+                continue  # paused: no live data required
+            if (host, miner["port"]) in vm_summaries:
+                live_ports[miner["port"]] = vm_summaries[(host, miner["port"])]
+            else:
+                complete = False
+        if complete:
+            covered[host] = live_ports
+    return covered
 
 
 def query_kryptex_rig(config):
@@ -438,10 +556,25 @@ def poll_fleet():
     configured_count = 0
     paused_count = 0
 
+    # Broker first: the miner-telemetry pipeline (VictoriaMetrics) is the
+    # proper data source. ssh probes remain only for hosts the broker does
+    # not cover (the two Windows boxes), and as fallback when it is down,
+    # stale, or a host is missing from it.
+    try:
+        vm_summaries = query_vm_summaries()
+    except Exception:
+        vm_summaries = {}
+    # Fresh user-intent state: which k3s miner Deployments are scaled to zero.
+    deploy_replicas = query_k8s_deploy_replicas()
+    covered = broker_covered(vm_summaries, deploy_replicas)
+
     # Remote hosts are probed in parallel: each is one ssh round trip, and doing
     # them in sequence would make the panel's refresh wait for the sum.
     remote_summaries = {}
-    remote_hosts = [name for name, config in FLEET.items() if not is_local(name, config)]
+    remote_hosts = [
+        name for name, config in FLEET.items()
+        if not is_local(name, config) and name not in covered
+    ]
     if remote_hosts:
         with ThreadPoolExecutor(max_workers=len(remote_hosts)) as pool:
             # The Kryptex app rig has no /summary to read: it gets its own probe.
@@ -485,15 +618,12 @@ def poll_fleet():
                 except Exception:
                     nvidia_power[name] = []
 
-    # Fresh user-intent state: which k3s miner Deployments are scaled to zero.
-    deploy_replicas = query_k8s_deploy_replicas()
-
     for host, config in FLEET.items():
         host_hashrate = 0.0
         host_power = 0.0
         host_online = 0
         host_paused = 0
-        probe_result = remote_summaries.get(host)
+        probe_result = covered.get(host) or remote_summaries.get(host)
         host_summaries = probe_result or {}
         # A host ssh answered is reachable even when its miner replied
         # nothing: "miner stopped" and "host down" are different states.
@@ -502,7 +632,10 @@ def poll_fleet():
 
         for i, entry in enumerate(config["miners"]):
             configured_count += 1
-            if is_local(host, config):
+            vm_host = covered.get(host)
+            if vm_host is not None:
+                summary = vm_host.get(entry["port"])
+            elif is_local(host, config):
                 summary = query_miner(config["ip"], entry["port"])
             else:
                 summary = host_summaries.get(entry["port"])
