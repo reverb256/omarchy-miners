@@ -29,6 +29,7 @@ Item {
   property int gpuCount: 0
   property int onlineCount: 0
   property int configuredCount: 0
+  property int pausedCount: 0
 
   property bool initialized: false
   property bool refreshing: false
@@ -114,6 +115,7 @@ Item {
     gpuCount = Number(totals.gpus || 0)
     onlineCount = Number(totals.online || 0)
     configuredCount = Number(totals.configured || 0)
+    pausedCount = Number(totals.paused || 0)
     lastUpdatedAt = Date.now()
   }
 

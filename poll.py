@@ -387,6 +387,47 @@ def number(value, fallback=0):
     return result
 
 
+def query_k8s_deploy_replicas():
+    """Spec replicas per mining Deployment — the USER-INTENT signal.
+
+    On a k3s miner, replicas == 0 is a DELIBERATE pause (the panel's pause
+    control scales to zero; ArgoCD carries ignoreDifferences so it sticks).
+    Anything else with no /summary is a failure. Returns {deploy: replicas};
+    {} when kubectl is unavailable or the API does not answer — the state
+    then falls back to online/offline, never a fake "paused".
+    """
+    kubectl = shutil.which("kubectl")
+    if not kubectl:
+        candidates = sorted(Path.home().glob(".local/share/mise/installs/kubectl/*/kubectl"))
+        if candidates:
+            kubectl = str(candidates[-1])
+        else:
+            for fallback in ("/usr/local/bin/kubectl", "/usr/bin/kubectl"):
+                if os.path.exists(fallback):
+                    kubectl = fallback
+                    break
+    if not kubectl:
+        return {}
+    env = dict(os.environ)
+    env.setdefault("KUBECONFIG", str(Path.home() / ".kube" / "config"))
+    try:
+        completed = subprocess.run(
+            [kubectl, "-n", "mining", "get", "deploy", "-o", "json"],
+            capture_output=True, text=True, timeout=6, check=False, env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if completed.returncode != 0:
+        return {}
+    replicas = {}
+    try:
+        for item in json.loads(completed.stdout).get("items", []):
+            replicas[item["metadata"]["name"]] = item.get("spec", {}).get("replicas", 1)
+    except (ValueError, KeyError):
+        return {}
+    return replicas
+
+
 def poll_fleet():
     hosts = {}
     miners = []
@@ -395,6 +436,7 @@ def poll_fleet():
     gpu_count = 0
     online_count = 0
     configured_count = 0
+    paused_count = 0
 
     # Remote hosts are probed in parallel: each is one ssh round trip, and doing
     # them in sequence would make the panel's refresh wait for the sum.
@@ -443,10 +485,14 @@ def poll_fleet():
                 except Exception:
                     nvidia_power[name] = []
 
+    # Fresh user-intent state: which k3s miner Deployments are scaled to zero.
+    deploy_replicas = query_k8s_deploy_replicas()
+
     for host, config in FLEET.items():
         host_hashrate = 0.0
         host_power = 0.0
         host_online = 0
+        host_paused = 0
         probe_result = remote_summaries.get(host)
         host_summaries = probe_result or {}
         # A host ssh answered is reachable even when its miner replied
@@ -462,6 +508,21 @@ def poll_fleet():
                 summary = host_summaries.get(entry["port"])
             gpus = (summary or {}).get("gpus") or []
             online = bool(summary and gpus)
+
+            # User-intent state, from the k3s Deployment spec: replicas == 0
+            # is a DELIBERATE pause (the panel's Pause control writes that),
+            # never a failure. Falls back to online/offline when kubectl
+            # cannot answer.
+            k8s = entry.get("k8s") or {}
+            paused = bool(k8s) and deploy_replicas.get(k8s.get("deploy", "")) == 0
+            if paused:
+                state = "paused"
+            elif online:
+                state = "mining"
+            elif reachable:
+                state = "offline"
+            else:
+                state = "unknown"
 
             # One peakminer instance drives one GPU, so the first entry is the
             # one this unit owns. Fall back to the summary's own totals when a
@@ -491,6 +552,10 @@ def poll_fleet():
                 "label": gpu.get("name") or entry["label"],
                 "powerLimit": number(entry.get("powerLimit")),
                 "online": online,
+                # paused = user intent (deployment scaled to 0); state folds
+                # both signals for everything that reads the JSON.
+                "paused": paused,
+                "state": state,
                 "hashrate": number(gpu.get("hashrate", summary.get("hashrate") if summary else 0)),
                 "power": gpu_power,
                 "temp": number(gpu.get("temperature_c")),
@@ -515,6 +580,10 @@ def poll_fleet():
                 host_hashrate += record["hashrate"]
                 host_power += record["power"]
 
+            if paused:
+                paused_count += 1
+                host_paused += 1
+
         hosts[host] = {
             "ip": config["ip"],
             "local": is_local(host, config),
@@ -523,6 +592,7 @@ def poll_fleet():
             "reachable": bool(reachable),
             "connected": host_online > 0,
             "online": host_online,
+            "paused": host_paused,
             "configured": len(config["miners"]),
             "hashrate": host_hashrate,
             "power": host_power,
@@ -539,6 +609,7 @@ def poll_fleet():
             "power": fleet_power,
             "gpus": gpu_count,
             "online": online_count,
+            "paused": paused_count,
             "configured": configured_count,
         },
     }

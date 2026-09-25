@@ -201,9 +201,15 @@ Panel {
             // The count is of GPUs actually mining, not rows on screen: an
             // offline miner is still listed. Saying "of N" keeps the pill from
             // reading as a miscount against the list below it.
-            detail: root.fleet && root.fleet.anyOnline
-              ? root.fleet.gpuCount + " of " + root.fleet.configuredCount + " GPUs"
-              : ""
+            detail: {
+              if (!root.fleet) return ""
+              var parts = []
+              if (root.fleet.anyOnline) parts.push(root.fleet.gpuCount + " of " + root.fleet.configuredCount + " GPUs")
+              // A user pause is stated, not implied: rows read "Paused", and
+              // the hero counts them, so 0-of-N never reads as a failure.
+              if (root.fleet.pausedCount > 0) parts.push(root.fleet.pausedCount + " paused")
+              return parts.join("  ·  ")
+            }
             foreground: root.foreground
             fontFamily: root.fontFamily
 

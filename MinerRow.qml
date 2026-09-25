@@ -32,9 +32,13 @@ Item {
 
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property bool online: !!miner && miner.online === true
+  // Paused BY THE USER (the k3s Deployment is scaled to 0): a deliberate stop,
+  // rendered differently from a failure. Read from the poller's spec-derived
+  // flag, never inferred from "not online".
+  readonly property bool paused: !!miner && miner.paused === true
   // Its host could not be reached, so this row's state is unknown rather than
   // stopped — offering "Resume" would imply we know it is not running.
-  readonly property bool unknown: !!miner && miner.hostReachable === false && !online
+  readonly property bool unknown: !!miner && miner.hostReachable === false && !online && !paused
   readonly property real temp: miner ? Number(miner.temp || 0) : 0
   readonly property real power: miner ? Number(miner.power || 0) : 0
   readonly property real powerLimit: miner ? Number(miner.powerLimit || 0) : 0
@@ -116,7 +120,9 @@ Item {
         anchors.rightMargin: control.visible ? Style.spacing.md : 0
         anchors.verticalCenter: parent.verticalCenter
         horizontalAlignment: Text.AlignRight
-        text: root.online && root.miner ? root.miner.hashrateText : (root.unknown ? "Unknown" : "Offline")
+        text: root.online && root.miner
+          ? root.miner.hashrateText
+          : (root.paused ? "Paused" : (root.unknown ? "Unknown" : "Offline"))
         color: root.online ? root.foreground : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
@@ -291,7 +297,8 @@ Item {
     text: root.miner
       ? String(root.miner.host) + " · " + String(root.miner.unit)
         + "\nport " + String(root.miner.port)
-        + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText : "\nstopped")
+        + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText
+                       : (root.paused ? "\npaused by user (deployment scaled to 0)" : "\nstopped"))
         + (root.online && root.earningsText !== "" ? "\n" + root.earningsText + " at the current pool rate" : "")
         + (root.online && Number(root.miner.xmrigHashrate || 0) > 0
             ? "\nXMR " + root.miner.xmrigText + " · " + Number(root.miner.xmrigShares || 0).toFixed(0) + " shares"

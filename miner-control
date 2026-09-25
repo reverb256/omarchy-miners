@@ -163,9 +163,11 @@ def build_k8s_command(k8s, action):
     ns = k8s.get("ns", "mining")
     kubectl = kubectl_bin()
     if action == "status":
-        # readyReplicas is "" when scaled to zero -> inactive (mirrors is-active)
-        return [kubectl, "-n", ns, "get", "deploy", deploy,
-                "-o", "jsonpath={.status.readyReplicas}"]
+        # spec.replicas is the USER-INTENT signal: 0 = paused deliberately
+        # (the panel's stop writes that; ArgoCD carries ignoreDifferences on the
+        # field so it sticks). readyReplicas is the liveness signal. Read both
+        # as JSON so "paused" and "crashed" can never be conflated.
+        return [kubectl, "-n", ns, "get", "deploy", deploy, "-o", "json"]
     if action == "restart":
         return [kubectl, "-n", ns, "rollout", "restart", f"deploy/{deploy}"]
     replicas = "1" if action == "start" else "0"
@@ -262,14 +264,27 @@ def main():
 
     state = output
     if mode == "k8s" and args.action == "status":
-        # Map the replica count to the systemctl-style vocabulary the panel
-        # expects: readyReplicas >= 1 -> "active", "" (scaled to 0) -> "inactive".
-        # A kubectl failure (endpoint unreachable, RBAC) is "unknown", never
-        # "inactive" — a dead API must not read as a deliberate pause.
+        # Vocabulary: "paused" = scaled to 0 by the user (a deliberate stop);
+        # "active" = at least one ready replica; "inactive" = should be running
+        # but is not ready; "unknown" = no apiserver answered. A paused miner
+        # is NOT a failure, and a dead API is NEVER reported as a pause.
         if completed.returncode != 0:
             state = "unknown"
         else:
-            state = "active" if output and output != "0" else "inactive"
+            try:
+                deploy_state = json.loads(output)
+                spec = deploy_state.get("spec", {}).get("replicas", 1)
+                ready = deploy_state.get("status", {}).get("readyReplicas", 0) or 0
+            except (ValueError, AttributeError):
+                spec, ready = -1, 0
+            if spec == 0:
+                state = "paused"
+            elif ready > 0:
+                state = "active"
+            elif spec > 0:
+                state = "inactive"
+            else:
+                state = "unknown"
 
     print(json.dumps({
         "ok": ok,
