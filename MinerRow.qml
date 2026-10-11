@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Ui
 
 // One miner: label and host, hashrate, a power meter against its limit, a
-// temperature reading, and a pause/resume control.
+// temperature reading, and an async pause/resume switch.
 //
 // Every colour comes from the theme. The previous version hardcoded a grey
 // surface and green/orange/red status colours, which fought every theme that
@@ -130,24 +130,23 @@ Item {
       textFormat: Text.PlainText
       }
 
-      Button {
+      // The control is an async on/off switch, not a verb button: the knob
+      // reads the miner's real state (running = on) from the poller, and a
+      // flip requests a pause/resume through the one in-flight action path.
+      // `busy` swallows further flips while the helper runs; the knob settles
+      // when the next poll lands — never optimistically.
+      ToggleSwitch {
         id: control
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(74)
         // No control at all while the host is out of contact: the action would
-        // travel the same connection the poll just failed to make, and qs.Ui's
-        // Button has no disabled state — its MouseArea always accepts clicks,
-        // so a dimmed-looking button would still fire.
+        // travel the same connection the poll just failed to make.
         visible: !root.unknown && root.controllable
-        text: root.busy ? "…" : (root.online ? "Pause" : "Resume")
-        bordered: true
+        checked: root.online
+        busy: root.busy
         foreground: root.foreground
-        fontFamily: root.fontFamily
-        fontSize: Style.font.caption
-        verticalPadding: Style.spacing.controlPaddingY
         opacity: root.busy ? 0.55 : 1
-        onClicked: if (!root.busy) root.toggleRequested()
+        onToggled: root.toggleRequested()
       }
     }
 
@@ -299,6 +298,7 @@ Item {
         + "\nport " + String(root.miner.port)
         + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText
                        : (root.paused ? "\npaused by user (deployment scaled to 0)" : "\nstopped"))
+        + (root.controllable && !root.unknown ? "\nswitch: pause / resume" : "")
         + (root.online && root.earningsText !== "" ? "\n" + root.earningsText + " at the current pool rate" : "")
         + (root.online && Number(root.miner.xmrigHashrate || 0) > 0
             ? "\nXMR " + root.miner.xmrigText + " · " + Number(root.miner.xmrigShares || 0).toFixed(0) + " shares"
