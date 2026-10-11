@@ -406,7 +406,11 @@ Item {
     if (!miner) return
     // Monitor-only rows (the Kryptex app rig) have no unit behind them.
     if (miner.controllable === false) return
-    if (miner.online) pause(miner)
+    // The flip follows DESIRED state — the same signal the checkbox shows —
+    // not live state: a managed miner that is down but not paused still reads
+    // "on", so flipping it means pause; an unchecked box means resume.
+    var shouldRun = miner.managed ? !miner.paused : miner.online
+    if (shouldRun) pause(miner)
     else resume(miner)
   }
 

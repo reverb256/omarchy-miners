@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Ui
 
 // One miner: label and host, hashrate, a power meter against its limit, a
-// temperature reading, and an async pause/resume switch.
+// temperature reading, and an async pause/resume checkbox.
 //
 // Every colour comes from the theme. The previous version hardcoded a grey
 // surface and green/orange/red status colours, which fought every theme that
@@ -130,23 +130,55 @@ Item {
       textFormat: Text.PlainText
       }
 
-      // The control is an async on/off switch, not a verb button: the knob
-      // reads the miner's real state (running = on) from the poller, and a
-      // flip requests a pause/resume through the one in-flight action path.
-      // `busy` swallows further flips while the helper runs; the knob settles
-      // when the next poll lands — never optimistically.
-      ToggleSwitch {
+      // The control is an async CHECKBOX, not a verb button: it shows the
+      // miner's DESIRED state (a k3s miner: its Deployment spec — checked
+      // means "should be running", so a transient outage keeps the box
+      // checked while the fleet self-heals; unmanaged rows fall back to live
+      // state). A flip requests a pause/resume through the one in-flight
+      // action path; `busy` shows a pending mark and swallows further flips,
+      // and the box settles when the next poll lands — never optimistically.
+      Item {
         id: control
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         // No control at all while the host is out of contact: the action would
         // travel the same connection the poll just failed to make.
         visible: !root.unknown && root.controllable
-        checked: root.online
-        busy: root.busy
-        foreground: root.foreground
-        opacity: root.busy ? 0.55 : 1
-        onToggled: root.toggleRequested()
+        readonly property int boxSize: Math.max(22, Math.round(Style.spacing.controlHeight * 0.55))
+        readonly property bool checked: !!root.miner && (root.miner.managed ? !root.miner.paused : root.online)
+        implicitWidth: boxSize
+        implicitHeight: boxSize
+
+        BorderSurface {
+          id: box
+          anchors.fill: parent
+          radius: Style.cornerRadius > 0 ? Math.round(control.boxSize * 0.28) : 0
+          color: control.checked
+            ? Style.selectedFillFor(root.foreground, Color.accent)
+            : Style.normalFillFor(root.foreground, Color.accent)
+          borderSpec: Border.controlSpec(control.checked ? "selected" : "normal", root.foreground, Color.accent)
+          opacity: root.busy ? 0.55 : 1
+
+          Behavior on color { ColorAnimation { duration: Style.duration(120) } }
+
+          Text {
+            anchors.centerIn: parent
+            // The pending mark keeps the box honest while the helper runs:
+            // the tick appears only once the poller confirms the new state.
+            text: root.busy ? "…" : (control.checked ? "\u{F012C}" : "")
+            color: control.checked ? Style.selectedStateColor(root.foreground, Color.accent) : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+          }
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: if (!root.busy) root.toggleRequested()
+        }
       }
     }
 
@@ -298,7 +330,7 @@ Item {
         + "\nport " + String(root.miner.port)
         + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText
                        : (root.paused ? "\npaused by user (deployment scaled to 0)" : "\nstopped"))
-        + (root.controllable && !root.unknown ? "\nswitch: pause / resume" : "")
+        + (root.controllable && !root.unknown ? "\ncheckbox: pause / resume" : "")
         + (root.online && root.earningsText !== "" ? "\n" + root.earningsText + " at the current pool rate" : "")
         + (root.online && Number(root.miner.xmrigHashrate || 0) > 0
             ? "\nXMR " + root.miner.xmrigText + " · " + Number(root.miner.xmrigShares || 0).toFixed(0) + " shares"

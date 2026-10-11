@@ -688,6 +688,11 @@ def poll_fleet():
                 # paused = user intent (deployment scaled to 0); state folds
                 # both signals for everything that reads the JSON.
                 "paused": paused,
+                # managed = a k3s Deployment owns this miner, so its spec is
+                # the DESIRED state the panel's checkbox shows (checked =
+                # replicas != 0, even while a transient fault is being
+                # healed). Unmanaged rows fall back to live state.
+                "managed": bool(k8s),
                 "state": state,
                 "hashrate": number(gpu.get("hashrate", summary.get("hashrate") if summary else 0)),
                 "power": gpu_power,
