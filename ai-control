@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Control one k3s AI workload (model server). The panel's second privileged
+entry point, a sibling of miner-control.
+
+The panel never builds a control command itself: it calls
+
+    ai-control <start|stop|restart|status|switch> <workload-id>
+
+and this script resolves the workload against the fleet definition
+(fleet.py AI_WORKLOADS), checks it is a k3s Deployment, and runs the right
+control path:
+
+  * start / stop   kubectl scale on deployment <deploy> in namespace <ns>
+                   (1 / 0). Runtime control only — config lives in git
+                   (reverb256/mining-k8s) + ArgoCD.
+  * restart        kubectl rollout restart.
+  * status         reads spec.replicas + readyReplicas as JSON so a
+                   deliberate pause (replicas == 0) can never be conflated
+                   with a failure, and a dead apiserver is never reported as
+                   a pause.
+  * switch <id>    the model-switch action for variants that share ONE GPU
+                   (fleet.py switchGroup, e.g. llama-zephyr-3090 vs
+                   llama-zephyr-3090-pq2): stops the siblings FIRST (freeing
+                   the card), then starts the picked variant. One invocation,
+                   so the panel's click-plus-confirm covers the whole swap.
+
+Refusing an unknown workload id keeps a bad panel binding from reaching any
+control surface at all.
+
+The k8s failover helpers below deliberately mirror miner-control (same
+candidate order, same override variable, same probe semantics): the two
+scripts are independent so a change to one can never break the other, and a
+gate asserts the candidate lists stay equal so the pair cannot drift.
+"""
+
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import shutil
+import ssl
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fleet import AI_WORKLOADS, switch_siblings  # noqa: E402
+
+ACTIONS = ("start", "stop", "restart", "status", "switch")
+KUBECONFIG = str(Path.home() / ".kube" / "config")
+
+# --- k8s API endpoint failover -------------------------------------------------
+# Same story as miner-control: the kubeconfig pins ONE apiserver. After a
+# connectivity-class failure, probe the peers in order and retry the action
+# once against the first live one. Probe = "does anything answer TLS on 6443":
+# the apiserver requires auth even for /readyz, so ANY HTTP response (401
+# included) proves it is up.
+# Test override: MINER_K8S_ENDPOINTS="10.1.1.199:6443,10.1.1.100:6443"
+# (the same hook miner-control uses — one test surface for both scripts).
+K8S_API_CANDIDATES = (
+    "10.1.1.100:6443",  # DNS_VIP - whichever control-plane holds it
+    "10.1.1.140:6443",  # sentry
+    "10.1.1.130:6443",  # forge
+    "10.1.1.120:6443",  # nexus
+)
+K8S_PROBE_TIMEOUT = 2.0
+UNREACHABLE_MARKERS = (
+    "connection refused",
+    "dial tcp",
+    "i/o timeout",
+    "context deadline exceeded",
+    "unable to connect to the server",
+    "no route to host",
+    "connection reset by peer",
+    "tls handshake timeout",
+    "network is unreachable",
+)
+
+
+def k8s_api_alive(hostport, timeout=K8S_PROBE_TIMEOUT):
+    """True when https://<hostport> answers at all (a 401 counts - it proves
+    an apiserver is listening; a dead one refuses or times out)."""
+    host, _, port = hostport.partition(":")
+    connection = None
+    try:
+        connection = http.client.HTTPSConnection(
+            host, int(port), timeout=timeout,
+            context=ssl._create_unverified_context(),
+        )
+        connection.request("GET", "/readyz")
+        connection.getresponse().read()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "endpoint dead"
+        return False
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def k8s_candidates():
+    raw = os.environ.get("MINER_K8S_ENDPOINTS")
+    if raw:
+        return tuple(item.strip() for item in raw.split(",") if item.strip())
+    return K8S_API_CANDIDATES
+
+
+def endpoint_unreachable(stderr):
+    text = (stderr or "").lower()
+    return any(marker in text for marker in UNREACHABLE_MARKERS)
+
+
+def run_k8s(command, env):
+    """Run kubectl; if its pinned endpoint is unreachable, retry once via peers."""
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=30, check=False, env=env
+        )
+    except subprocess.TimeoutExpired:
+        completed, reason = None, "kubectl timed out"
+    else:
+        if completed.returncode == 0 or not endpoint_unreachable(completed.stderr):
+            return completed
+        lines = (completed.stderr or "").strip().splitlines()
+        reason = lines[-1] if lines else f"kubectl exit {completed.returncode}"
+
+    for endpoint in k8s_candidates():
+        if not k8s_api_alive(endpoint):
+            continue
+        print(f"ai-control: {reason} — retrying via {endpoint}", file=sys.stderr)
+        retry = [command[0], "--server", f"https://{endpoint}", *command[1:]]
+        return subprocess.run(
+            retry, capture_output=True, text=True, timeout=30, check=False, env=env
+        )
+    if completed is not None:
+        return completed
+    raise subprocess.TimeoutExpired(command, 30)
+
+
+def fail(message, code=1, **extra):
+    payload = {"ok": False, "error": message}
+    payload.update(extra)
+    print(json.dumps(payload))
+    sys.exit(code)
+
+
+def find_workload(workload_id):
+    entry = AI_WORKLOADS.get(workload_id)
+    if not entry:
+        fail(f"Unknown AI workload: {workload_id}")
+    return entry
+
+
+def kubectl_bin():
+    found = shutil.which("kubectl")
+    if found:
+        return found
+    # mise-managed installs (the panel may run without shims on PATH)
+    candidates = sorted(Path.home().glob(".local/share/mise/installs/kubectl/*/kubectl"))
+    if candidates:
+        return str(candidates[-1])
+    for fallback in ("/usr/local/bin/kubectl", "/usr/bin/kubectl"):
+        if os.path.exists(fallback):
+            return fallback
+    fail("kubectl not found — cannot control k3s AI workloads")
+
+
+def build_k8s_command(entry, workload_id, action):
+    deploy = entry.get("deploy", workload_id)
+    ns = entry.get("ns", "mining")
+    kubectl = kubectl_bin()
+    if action == "status":
+        # spec.replicas is the USER-INTENT signal: 0 = paused deliberately
+        # (the panel's stop writes that; the mining-k8s apps carry
+        # ignoreDifferences on the field so it sticks). readyReplicas is the
+        # liveness signal. Read both as JSON so "paused" and "crashed" can
+        # never be conflated.
+        return [kubectl, "-n", ns, "get", "deploy", deploy, "-o", "json"]
+    if action == "restart":
+        return [kubectl, "-n", ns, "rollout", "restart", f"deploy/{deploy}"]
+    replicas = "1" if action == "start" else "0"
+    return [kubectl, "-n", ns, "scale", f"deploy/{deploy}", f"--replicas={replicas}"]
+
+
+def switch_plan(workload_id, entry, registry=None):
+    """The ordered steps of a model switch: stop every sibling FIRST (one
+    card — freeing it before the new variant loads), then start the picked
+    variant. Returns [(id, action), ...], or None when the workload has no
+    switch group. Pure (no cluster calls) so gates can pin the order."""
+    group = entry.get("switchGroup")
+    if not group:
+        return None
+    siblings = switch_siblings(workload_id) if registry is None else [
+        other for other, config in registry.items()
+        if other != workload_id and config.get("switchGroup") == group
+    ]
+    return [(sibling, "stop") for sibling in siblings] + [(workload_id, "start")]
+
+
+def run_single(entry, workload_id, action, env):
+    command = build_k8s_command(entry, workload_id, action)
+    return run_k8s(command, env)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=ACTIONS)
+    parser.add_argument("workload")
+    args = parser.parse_args()
+
+    entry = find_workload(args.workload)
+
+    env = dict(os.environ)
+    env["KUBECONFIG"] = env.get("KUBECONFIG") or KUBECONFIG
+
+    # `switch` is a coupled action: it needs a group, and it must be planned
+    # before anything runs so a bad binding cannot stop a sibling and then
+    # discover the target is invalid.
+    if args.action == "switch":
+        plan = switch_plan(args.workload, entry)
+        if plan is None:
+            fail(
+                f"{args.workload} is not in a switch group — "
+                "start/stop it individually instead"
+            )
+        started, stopped = [], []
+        for step_id, step_action in plan:
+            step_entry = AI_WORKLOADS.get(step_id) or {}
+            try:
+                completed = run_single(step_entry, step_id, step_action, env)
+            except subprocess.TimeoutExpired:
+                fail(
+                    f"Timed out switching {args.workload} at {step_action} {step_id}",
+                    action="switch", workload=args.workload, mode="k8s",
+                    started=started, stopped=stopped,
+                )
+            if completed.returncode != 0:
+                detail = (completed.stderr or "").strip().splitlines()
+                fail(
+                    f"{step_action} {step_id} failed: "
+                    + (detail[-1] if detail else f"exit {completed.returncode}"),
+                    action="switch", workload=args.workload, mode="k8s",
+                    started=started, stopped=stopped,
+                )
+            if step_action == "start":
+                started.append(step_id)
+            else:
+                stopped.append(step_id)
+        print(json.dumps({
+            "ok": True,
+            "action": "switch",
+            "workload": args.workload,
+            "mode": "k8s",
+            "state": "switched",
+            "started": started,
+            "stopped": stopped,
+            "error": "",
+        }))
+        sys.exit(0)
+
+    try:
+        completed = run_single(entry, args.workload, args.action, env)
+    except subprocess.TimeoutExpired:
+        fail(f"Timed out running {args.action} on {args.workload}")
+    except FileNotFoundError as error:
+        fail(str(error))
+
+    output = (completed.stdout or "").strip()
+    error = (completed.stderr or "").strip()
+
+    # A non-zero exit for anything but status is an error; status itself is
+    # an answer (the state block below decides what it means).
+    ok = completed.returncode == 0 or args.action == "status"
+
+    state = output
+    if args.action == "status":
+        # Vocabulary: "paused" = scaled to 0 by the user (a deliberate stop);
+        # "active" = at least one ready replica; "inactive" = should be running
+        # but is not ready; "unknown" = no apiserver answered. A paused
+        # workload is NOT a failure, and a dead API is NEVER reported as a
+        # pause.
+        if completed.returncode != 0:
+            state = "unknown"
+        else:
+            try:
+                deploy_state = json.loads(output)
+                spec = deploy_state.get("spec", {}).get("replicas", 1)
+                ready = deploy_state.get("status", {}).get("readyReplicas", 0) or 0
+            except (ValueError, AttributeError):
+                spec, ready = -1, 0
+            if spec == 0:
+                state = "paused"
+            elif ready > 0:
+                state = "active"
+            elif spec > 0:
+                state = "inactive"
+            else:
+                state = "unknown"
+
+    print(json.dumps({
+        "ok": ok,
+        "action": args.action,
+        "workload": args.workload,
+        "mode": "k8s",
+        "state": state,
+        "error": "" if ok else (error or f"exit {completed.returncode}"),
+    }))
+    sys.exit(0 if ok else completed.returncode)
+
+
+if __name__ == "__main__":
+    main()

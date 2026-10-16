@@ -155,16 +155,16 @@ printf 'G27 keyboard confirm      : '
 grep -c 'cursorConfirmIndex' Panel.qml
 
 # G28: the dashboard side stays READ-ONLY. poll.py/gpu.py must contain no
-# miner-control invocation and no kubectl mutation verb.
+# miner-control / ai-control invocation and no kubectl mutation verb.
 printf 'G28 dashboard read-only   : '
 python3 - <<'PY'
 import re
 bad = []
 for name in ('poll.py', 'gpu.py'):
     source = open(name).read()
-    for token in ("'miner-control'", '"miner-control"'):
+    for token in ("'miner-control'", '"miner-control"', "'ai-control'", '"ai-control"'):
         if token in source:
-            bad.append(name + ':miner-control')
+            bad.append(name + ':' + token.strip("'\""))
     for match in re.finditer(r'^\s*[^#\n]*kubectl[^\n]*$', source, re.M):
         if re.search(r'\b(scale|rollout|delete|apply|patch|annotate|edit)\b', match.group(0)):
             bad.append(name + ':kubectl-mutate')
@@ -377,4 +377,205 @@ finally:
 
 print("ok (4 hostile bodies rejected → probe failed → ssh fallback)" if not failures
       else "FAIL:" + "; ".join(failures))
+PY
+
+# --- AI workload control gates (ai-control + poll.py `ai` section) -----------
+
+# G33: failover parity with G21, for ai-control. The pinned apiserver is dead;
+# the action must still land via a peer ("retrying via" on stderr proves the
+# failover path ran). Also asserts the candidate lists in ai-control and
+# miner-control stay IDENTICAL — the copies are deliberate (neither script can
+# break the other), and this check is what keeps them from drifting apart.
+printf 'G33 ai-control failover    : '
+python3 - <<'PY'
+import importlib.machinery, importlib.util, json, os, re, subprocess, tempfile
+from pathlib import Path
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+ai = load("ai_control", "./ai-control")
+miner = load("miner_control", "./miner-control")
+
+failures = []
+if ai.K8S_API_CANDIDATES != miner.K8S_API_CANDIDATES:
+    failures.append(f"candidates drifted: {ai.K8S_API_CANDIDATES} vs {miner.K8S_API_CANDIDATES}")
+if ai.UNREACHABLE_MARKERS != miner.UNREACHABLE_MARKERS:
+    failures.append("unreachable-marker lists drifted")
+if ai.K8S_PROBE_TIMEOUT != miner.K8S_PROBE_TIMEOUT:
+    failures.append("probe timeouts drifted")
+
+config = Path.home() / ".kube" / "config"
+patched = re.sub(r"https://[0-9.]+:6443", "https://10.1.1.199:6443", config.read_text())
+with tempfile.NamedTemporaryFile("w", suffix="-kubeconfig", delete=False) as handle:
+    handle.write(patched)
+    bad_config = handle.name
+try:
+    env = dict(os.environ, KUBECONFIG=bad_config)
+    run = subprocess.run(
+        ["python3", "./ai-control", "status", "llama-nexus-3060ti"],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+finally:
+    os.unlink(bad_config)
+try:
+    answer = json.loads(run.stdout)
+except ValueError:
+    answer = {"raw": run.stdout, "err": run.stderr}
+if not (answer.get("ok") and answer.get("state") in ("active", "paused")):
+    failures.append(f"failover answer: {answer}")
+elif "retrying via" not in run.stderr:
+    failures.append("no retry breadcrumb on stderr — failover may not have run")
+print("ok (failover, candidate lists in step)" if not failures
+      else "FAIL:" + "; ".join(failures))
+PY
+
+# G34: pause vs failure for AI rows (mirrors G22). A workload scaled to 0 must
+# read "paused" in BOTH surfaces (ai-control state and poll.py's per-row
+# `paused`/`desired`), agreeing with the Deployment spec — so a deliberate
+# pause can never be reported as a failure, and a failure can never hide
+# behind `paused`. Works in both states. Probes llama-nexus-3060ti (idle).
+printf 'G34 AI pause vs failure   : '
+python3 - <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, '.')
+from fleet import AI_WORKLOADS
+
+wid = 'llama-nexus-3060ti'
+deploy = AI_WORKLOADS[wid]['deploy']
+
+env = dict(os.environ)
+env.setdefault('KUBECONFIG', str(Path.home() / '.kube' / 'config'))
+raw = subprocess.run(
+    ['kubectl', '-n', 'mining', 'get', 'deploy', deploy, '-o', 'json'],
+    capture_output=True, text=True, env=env, timeout=30,
+).stdout
+spec = int(json.loads(raw)['spec']['replicas']) if raw else -1
+
+state = json.loads(subprocess.run(
+    ['python3', './ai-control', 'status', wid],
+    capture_output=True, text=True, timeout=30,
+).stdout).get('state')
+
+poll = json.loads(subprocess.run(
+    ['python3', './poll.py'], capture_output=True, text=True, timeout=60,
+).stdout)
+row = next((x for x in (poll.get('ai') or {}).get('rows', []) if x.get('id') == wid), None)
+
+paused = spec == 0
+ok = (row is not None
+      and row.get('desired') == spec
+      and isinstance(row.get('paused'), bool)
+      and state in ('active', 'paused', 'inactive')
+      and ((state == 'paused') == paused)
+      and (bool(row.get('paused')) == paused)
+      and ((row.get('state') == 'paused') == paused))
+print(
+    f"ok (spec={spec} state={state} poll={'paused' if row and row.get('paused') else 'running'})"
+    if ok else f"FAIL spec={spec} state={state} row={row}"
+)
+PY
+
+# G35: stopping/switching an AI workload must never be possible without an
+# explicit click plus confirmation (mirrors G26/G27). Static markers: the
+# row's armed-stop state (stopConfirm) and the switch chip's armed state
+# (switchConfirm). Both present = 2.
+printf 'G35 AI stop+switch confirm: '
+python3 -c "src=open('AiRow.qml').read();print(int('stopConfirm' in src)+int('switchConfirm' in src))"
+
+# G36: an unknown workload id must be REFUSED before any control surface is
+# touched (mirrors G9 — ok:false IS the pass).
+printf 'G36 refuses unknown id    : '
+python3 ./ai-control stop llama-99999 |
+  python3 -c "import sys,json;print(json.load(sys.stdin)['ok'])"
+
+# G37: the poll's `ai` section carries the miner-row contract for every
+# registry workload: managed / desired / paused / state, the switch pair is
+# marked both ways, and workload probe records are marked managed vs the
+# read-only unmanaged endpoints (host llama-swap / LM Studio / ollama).
+printf 'G37 AI rows contract      : '
+python3 - <<'PY'
+import json, subprocess, sys
+sys.path.insert(0, '.')
+from fleet import AI_WORKLOADS
+
+poll = json.loads(subprocess.run(
+    ['python3', './poll.py'], capture_output=True, text=True, timeout=60,
+).stdout)
+rows = (poll.get('ai') or {}).get('rows') or []
+by_id = {row.get('id'): row for row in rows}
+
+failures = []
+if len(rows) != len(AI_WORKLOADS) or set(by_id) != set(AI_WORKLOADS):
+    failures.append(f"rows {len(rows)} vs registry {len(AI_WORKLOADS)}")
+for wid, row in by_id.items():
+    for key in ('managed', 'desired', 'paused', 'state', 'switchGroup',
+                'switchSiblings', 'host', 'label', 'deploy', 'ns'):
+        if key not in row:
+            failures.append(f"{wid}: missing {key}")
+    if row.get('managed') is not True:
+        failures.append(f"{wid}: not managed")
+    if row.get('state') not in ('active', 'paused', 'inactive', 'unknown'):
+        failures.append(f"{wid}: bad state {row.get('state')!r}")
+    if isinstance(row.get('desired'), int):
+        if bool(row.get('paused')) != (row['desired'] == 0):
+            failures.append(f"{wid}: paused != (desired == 0)")
+    elif row.get('paused') is not False:
+        failures.append(f"{wid}: no-answer row reads paused")
+
+# The 3090 switch group: the two variants point at each other, and a workload
+# without a group has no siblings.
+a, b = by_id.get('llama-zephyr-3090'), by_id.get('llama-zephyr-3090-pq2')
+if not a or not b \
+        or a.get('switchSiblings') != ['llama-zephyr-3090-pq2'] \
+        or b.get('switchSiblings') != ['llama-zephyr-3090']:
+    failures.append("3090 switch group not paired")
+for wid, row in by_id.items():
+    if not row.get('switchGroup') and row.get('switchSiblings'):
+        failures.append(f"{wid}: siblings without a group")
+
+# Endpoint records: the k8s-managed probes carry the desired/paused view and
+# are MARKED managed; the rest are marked unmanaged (read-only).
+llm = (poll.get('workloads') or {}).get('llm') or []
+managed = [r for r in llm if r.get('managed') is True]
+unmanaged = [r for r in llm if r.get('managed') is False]
+if not managed or not unmanaged:
+    failures.append(f"endpoint marks: {len(managed)} managed / {len(unmanaged)} unmanaged")
+if any(r.get('paused') is None for r in managed):
+    failures.append("managed endpoint record without the desired/paused view")
+
+print(
+    f"ok ({len(rows)} rows, 1 switch pair, {len(managed)} managed + {len(unmanaged)} unmanaged endpoints)"
+    if not failures else "FAIL:" + "; ".join(failures)
+)
+PY
+
+# G38: the switch plan is ordered and refuses non-group workloads. Pure check
+# (no cluster calls): the siblings are stopped FIRST (one GPU — free the card
+# before the new variant loads), then the picked variant starts.
+printf 'G38 switch stops sibling   : '
+python3 - <<'PY'
+import importlib.machinery, importlib.util
+
+loader = importlib.machinery.SourceFileLoader("ai_control", "./ai-control")
+spec = importlib.util.spec_from_loader("ai_control", loader)
+ai = importlib.util.module_from_spec(spec)
+loader.exec_module(ai)
+
+failures = []
+plan = ai.switch_plan('llama-zephyr-3090-pq2', ai.AI_WORKLOADS['llama-zephyr-3090-pq2'])
+if plan != [('llama-zephyr-3090', 'stop'), ('llama-zephyr-3090-pq2', 'start')]:
+    failures.append(f"pq2 plan {plan!r}")
+plan = ai.switch_plan('llama-zephyr-3090', ai.AI_WORKLOADS['llama-zephyr-3090'])
+if plan != [('llama-zephyr-3090-pq2', 'stop'), ('llama-zephyr-3090', 'start')]:
+    failures.append(f"3090 plan {plan!r}")
+if ai.switch_plan('comfyui-zephyr', ai.AI_WORKLOADS['comfyui-zephyr']) is not None:
+    failures.append("non-group workload planned a switch")
+print("ok (siblings stopped first, then the pick; non-group refused)"
+      if not failures else "FAIL:" + "; ".join(failures))
 PY

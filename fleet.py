@@ -325,6 +325,101 @@ GPU_FLEET = {
 }
 
 
+# ---------------------------------------------------------------------------
+# AI workload registry — the k3s Deployments in namespace `mining` that serve
+# models (llama.cpp, ComfyUI, YuE2). One source of truth for ai-control,
+# poll.py and the panel: workload ids are DATA, never derived.
+#
+# Runtime control only (start/stop/restart/switch); config changes go through
+# git (reverb256/mining-k8s) + ArgoCD, same rule as the miners.
+#
+#   host         the fleet host whose GPU runs it
+#   gpu          the card (display)
+#   label        human label (row tooltip / detail)
+#   kind         llm | image | audio — display grouping
+#   probe        the GPU_FLEET workload probe (host + probe name) this
+#                deployment answers as, when one exists — its health and
+#                loaded-model detail ride along on the panel row
+#   switchGroup  mutually-exclusive model variants that share ONE GPU:
+#                starting one is meant to stop the others (the panel's
+#                switch action; `ai-control switch <id>`). Only variants of
+#                the same card may share a group.
+#   variant      the short label the switch chip shows for this member
+AI_WORKLOADS = {
+    "llama-forge-4060-0": {
+        "ns": "mining", "deploy": "llama-forge-4060-0",
+        "host": "forge", "gpu": "RTX 4060 #1",
+        "label": "llama.cpp · 4060 #1", "kind": "llm",
+        "probe": {"host": "forge", "name": "llama-forge-4060-0"},
+    },
+    "llama-forge-4060-1": {
+        "ns": "mining", "deploy": "llama-forge-4060-1",
+        "host": "forge", "gpu": "RTX 4060 #2",
+        "label": "llama.cpp · 4060 #2", "kind": "llm",
+        "probe": {"host": "forge", "name": "llama-forge-4060-1"},
+    },
+    "llama-forge-5700xt": {
+        "ns": "mining", "deploy": "llama-forge-5700xt",
+        "host": "forge", "gpu": "RX 5600/5700 (Navi 10)",
+        "label": "llama.cpp · RX 5700 XT (Vulkan)", "kind": "llm",
+        "probe": {"host": "forge", "name": "llama-forge-5700xt"},
+    },
+    "llama-nexus-3060ti": {
+        "ns": "mining", "deploy": "llama-nexus-3060ti",
+        "host": "nexus", "gpu": "RTX 3060 Ti",
+        "label": "llama.cpp · 3060 Ti", "kind": "llm",
+        # This card is ARBITRATED by the pause machinery (miner-pause-watchdog,
+        # ns mining): the miner and this member cannot share the card, the
+        # miner wins, and a member scaled up while peakminer-nexus-3060ti runs
+        # is force-scaled back to 0 within one 30 s sweep (reason=miner-running,
+        # seen 2026-10-16). Not a plugin rule — the panel only says so.
+        "hint": "arbitrated card: the pause machinery scales this back to 0 "
+                "while peakminer-nexus-3060ti runs (miner wins)",
+    },
+    # The 3090 hosts two llama.cpp variants (the pq2 quant is the second).
+    # One card: they share a switch group, so the panel starts the picked
+    # variant and stops its sibling in ONE confirmed action.
+    "llama-zephyr-3090": {
+        "ns": "mining", "deploy": "llama-zephyr-3090",
+        "host": "zephyr", "gpu": "RTX 3090",
+        "label": "llama.cpp · 3090", "kind": "llm",
+        "probe": {"host": "zephyr", "name": "llama-zephyr-3090"},
+        "switchGroup": "zephyr-3090", "variant": "3090",
+    },
+    "llama-zephyr-3090-pq2": {
+        "ns": "mining", "deploy": "llama-zephyr-3090-pq2",
+        "host": "zephyr", "gpu": "RTX 3090",
+        "label": "llama.cpp · 3090 pq2", "kind": "llm",
+        "switchGroup": "zephyr-3090", "variant": "pq2",
+    },
+    "yue2-zephyr": {
+        "ns": "mining", "deploy": "yue2-zephyr",
+        "host": "zephyr", "gpu": "RTX 3090",
+        "label": "YuE2 music", "kind": "audio",
+        "probe": {"host": "zephyr", "name": "yue2"},
+    },
+    "comfyui-zephyr": {
+        "ns": "mining", "deploy": "comfyui-zephyr",
+        "host": "zephyr", "gpu": "RTX 3090",
+        "label": "ComfyUI", "kind": "image",
+        "probe": {"host": "zephyr", "name": "ComfyUI"},
+    },
+}
+
+
+def switch_siblings(workload_id):
+    """Workload ids that share a switchGroup with `workload_id` (in registry
+    order). Empty when the workload has no group — a switch is then refused."""
+    entry = AI_WORKLOADS.get(workload_id) or {}
+    group = entry.get("switchGroup")
+    if not group:
+        return []
+    return [
+        other for other, config in AI_WORKLOADS.items()
+        if other != workload_id and config.get("switchGroup") == group
+    ]
+
+
 def hosts():
     """Host names in a stable order."""
     return list(FLEET.keys())

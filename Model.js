@@ -134,6 +134,54 @@ function gpuIssues(gpus, warnC, alarmC) {
   return out
 }
 
+// ---------------------------------------------------------------- AI rows
+// The AI section's rows carry the same managed / desired / paused contract
+// as the miner rows (poll.py build_ai_rows). The one panel-side derivation
+// is the SWITCH OFFER: a workload row may offer switching to a sibling
+// variant of the same GPU (one card, two models — starting one is meant to
+// stop the other). The offer shows while switching would CHANGE something:
+// a row whose sibling is already the desired-up variant offers nothing (the
+// sibling's own row carries the way back). Unknown state (no apiserver
+// answered) hides every control, the same rule the miner rows follow.
+
+function findRowById(rows, id) {
+  var list = rows || []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && String(list[i].id || "") === String(id)) return list[i]
+  }
+  return null
+}
+
+function switchOffer(row, rows) {
+  if (!row || !row.switchSiblings || row.switchSiblings.length === 0) return null
+  if (String(row.state || "") === "unknown") return null
+  for (var i = 0; i < row.switchSiblings.length; i++) {
+    var sibling = findRowById(rows, row.switchSiblings[i])
+    if (!sibling) continue
+    if (Number(sibling.desired || 0) > 0 && Number(row.desired || 0) === 0) continue
+    return sibling
+  }
+  return null
+}
+
+// The switch chip's label: the target variant's short name (fallback: its id).
+function switchLabel(workload) {
+  if (!workload) return ""
+  var variant = String(workload.variant || "")
+  return variant !== "" ? variant : String(workload.id || "")
+}
+
+// 'active' · 'paused' · 'inactive' · 'unknown' — the locked vocabulary.
+// A paused row is stated by the user's intent (spec.replicas == 0), never
+// inferred from "not running"; unknown means nobody could be asked.
+function aiStateLabel(workload) {
+  if (!workload) return ""
+  var state = String(workload.state || "")
+  if (state === "active" || state === "paused" || state === "inactive" || state === "unknown")
+    return state
+  return "unknown"
+}
+
 // -------------------------------------------------- miner <-> GPU pairing
 // One peakminer instance drives one GPU (the fleet definition enforces the
 // dedup), so every miner row can carry its card's own readings. Matching is

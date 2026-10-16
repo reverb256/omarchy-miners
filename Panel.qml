@@ -260,6 +260,43 @@ Panel {
   readonly property var mediaList: root.fleet ? root.fleet.imageAudioWorkloads : []
   readonly property var transcodeList: root.fleet ? root.fleet.transcodeWorkloads : []
 
+  // ---- AI section: the k3s model servers, controlled like the miners ----
+  readonly property var aiList: root.fleet ? root.fleet.aiRows : []
+
+  readonly property var aiCounts: {
+    var out = { active: 0, paused: 0, inactive: 0, unknown: 0 }
+    for (var i = 0; i < root.aiList.length; i++) {
+      var state = String(root.aiList[i].state || "unknown")
+      if (out[state] === undefined) state = "unknown"
+      out[state]++
+    }
+    return out
+  }
+
+  readonly property string aiSummaryText: {
+    if (!root.fleet || !root.fleet.initialized) return "—"
+    var parts = [root.aiCounts.active + " active"]
+    if (root.aiCounts.paused > 0) parts.push(root.aiCounts.paused + " paused")
+    if (root.aiCounts.inactive > 0) parts.push(root.aiCounts.inactive + " inactive")
+    if (root.aiCounts.unknown > 0) parts.push(root.aiCounts.unknown + " unknown")
+    return parts.join("  ·  ")
+  }
+
+  function aiBusy(id) {
+    if (!root.fleet) return false
+    return root.fleet.busyRevision >= 0 && root.fleet.isBusy("ai:" + String(id))
+  }
+
+  // The tooltip detail for an AI row: the registry's probe record is a
+  // workload record, so the same formatters the Workloads section uses
+  // render it — one place for model/queue/state text.
+  function aiDetailText(row) {
+    var probe = row ? row.probe : null
+    if (!probe) return ""
+    if (String(probe.kind || "") === "llm") return root.llmDetail(probe)
+    return root.mediaDetail(probe)
+  }
+
   function workloadHealthy(workload) {
     return !!workload && (workload.health === true || workload.asleep === true)
   }
@@ -542,6 +579,62 @@ Panel {
                 + "/" + Number(modelData.miner.xmrigSharesTotal || 0).toFixed(0) + " shares"
               : ""
             onToggleRequested: if (root.fleet && modelData.miner) root.fleet.toggle(modelData.miner)
+          }
+        }
+
+        // ---- AI models: k3s model servers, controlled like the miners ----
+        // One row per AI workload (llama.cpp / ComfyUI / YuE2 deployments in
+        // ns mining). The checkbox is the same desired-state control the
+        // miner rows carry: checked = the Deployment spec says it should
+        // run; a stop arms first and commits on the second click. Rows stay
+        // INDEPENDENT of the miner toggles — contention on a card is the
+        // user's call. Only variants that share one GPU (switch group) get
+        // the switch chip, which starts the picked variant and stops its
+        // sibling in one confirmed action.
+        PanelSeparator {
+          visible: root.aiList.length > 0
+          foreground: root.foreground
+        }
+
+        SectionLabel {
+          visible: root.aiList.length > 0
+          width: parent.width
+          text: "AI models"
+          rightText: root.aiSummaryText
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        // The rows sit in their own tighter column (2 px gaps, like the
+        // models-on-disk list): eight compact rows at the section gap would
+        // push the pane against its height cap.
+        Column {
+          id: aiColumn
+          visible: root.aiList.length > 0
+          width: parent.width
+          spacing: Style.space(2)
+
+          Repeater {
+            model: root.aiList
+
+            AiRow {
+              id: aiRow
+              required property var modelData
+
+              // Not parent.width: a Repeater delegate's parent is null while
+              // it is being created, and the list is rebuilt on every poll.
+              width: aiColumn.width
+              workload: modelData
+              switchTo: Model.switchOffer(modelData, root.aiList)
+              detailText: root.aiDetailText(modelData)
+              foreground: root.foreground
+              urgent: root.urgent
+              fontFamily: root.fontFamily
+              busy: root.aiBusy(modelData ? modelData.id : "")
+              onToggleRequested: if (root.fleet && modelData) root.fleet.aiToggle(modelData)
+              onSwitchRequested: if (root.fleet && aiRow.switchTo)
+                root.fleet.aiSwitch(modelData, aiRow.switchTo)
+            }
           }
         }
 

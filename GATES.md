@@ -31,11 +31,17 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G25 | Identity kept | manifest `id == io.github.jkro.miners`, `name == "GPU Fleet"` | `ok` |
 | G26 | Stop needs confirm | `grep -c 'stopConfirm' MinerRow.qml` — the armed-stop marker | count ≥ 1 |
 | G27 | Keyboard confirm | `grep -c 'cursorConfirmIndex' Panel.qml` — Enter also two-steps a stop | count ≥ 1 |
-| G28 | Dashboard read-only | `poll.py`/`gpu.py` contain no `miner-control` invocation and no kubectl mutation verb | `ok` |
+| G28 | Dashboard read-only | `poll.py`/`gpu.py` contain no `miner-control`/`ai-control` invocation and no kubectl mutation verb | `ok` |
 | G29 | Single pane, no scroll | `Panel.qml`/`MinerRow.qml`/`components/*.qml` contain no `Flickable`/`ScrollBar`/`ScrollView`/`contentY`, and the panel draws one `MinerRow` per entry of the merged `root.rows` list | `ok` |
 | G30 | Windows rows monitor-only | for every `FLEET` host with `platform == "windows"`, `control == "none"` — the collector contract's hard gate | `ok (N windows hosts, all control=none)` |
 | G31 | Collector fixture equivalence | `fixtures/krash2-status.json` + `fixtures/krash3-status.json` (saved status.json records) run through §5 validation + the shared record builder; rows must equal the ssh-shaped inputs for the same miners, session extras asserted, undeclared port dropped | `ok (both hosts: identical rows on both transports)` |
 | G32 | Hostile payloads rejected | oversized / wrong-type / bad-host / readonly:false bodies served over a real HTTP endpoint; each must be a failed probe that falls back to the ssh read — no exception, no payload data in the result. A valid payload positive control proves the gate cannot pass by rejecting everything | `ok (4 hostile bodies rejected → probe failed → ssh fallback)` |
+| G33 | AI control failover | `ai-control status llama-nexus-3060ti` with `KUBECONFIG` pointing at a dead server (10.1.1.199) must land via a peer — `retrying via` on stderr proves the failover path ran. Also asserts the failover candidate/marker/timeout constants stay IDENTICAL to `miner-control`'s (deliberate copies, no drift) | `ok (failover, candidate lists in step)` |
+| G34 | AI pause vs failure | `ai-control` state == poll.py `ai` row `paused`/`desired` == Deployment spec, both states (llama-nexus-3060ti) | `ok (...)` |
+| G35 | AI stop/switch confirm | `grep` markers in `AiRow.qml`: armed stop (`stopConfirm`) + armed switch (`switchConfirm`) | count == 2 |
+| G36 | Unknown AI id refused | `ai-control stop llama-99999` | `False` (`ok:false` IS the pass) |
+| G37 | AI rows contract | poll `ai.rows` == registry (managed/desired/paused/state present; `paused == (desired == 0)`; 3090 switch pair symmetric; unmanaged endpoints marked `managed:false`) | `ok (8 rows, 1 switch pair, N managed + M unmanaged endpoints)` |
+| G38 | Switch stops sibling | pure `switch_plan()` check: siblings stopped FIRST, then the picked variant started; non-group workloads refuse a switch | `ok (...)` |
 
 ## Windows read-only collector (contract §5)
 
@@ -63,7 +69,21 @@ healthy on sentry/forge. After a connectivity-class failure `miner-control`
 probes the peers in order — 10.1.1.100 (DNS_VIP), sentry, forge, nexus — and
 retries the action once against the first that answers. A status read against
 an unreachable API reports `state:unknown`, never a fake `inactive`. Test
-override: `MINER_K8S_ENDPOINTS="host:port,..."`.
+override: `MINER_K8S_ENDPOINTS="host:port,..."`. `ai-control` mirrors the
+same path with its own copy of the constants; G33 asserts the two copies stay
+identical (drift lock) and that the failover retry actually runs.
+
+AI MODEL CONTROL (2026-10-16): the poll JSON's `ai` section and the panel's
+"AI models" rows carry the same managed/desired/paused contract as the miner
+rows. `ai-control` is the second privileged entry point
+(`start|stop|restart|status|switch <workload-id>`; k3s scale / rollout
+restart in ns `mining`). A switch is ONE invocation for variants sharing a
+card (fleet.py `switchGroup`): siblings are stopped first (free the card),
+then the picked variant starts. The nexus 3060 Ti is ARBITRATED by the pause
+machinery (miner-pause-watchdog, ns mining): the miner wins and a member
+scaled up while `peakminer-nexus-3060ti` runs is force-scaled back to 0
+within one 30 s sweep — the row's tooltip says so; the panel does not fight
+it and does not couple the rows.
 
 forge runs PERSISTENT units (`peakminer-forge-4060-0/1.service`) whose
 ExecStart is redirected by a `/usr/local/lib/systemd/system` drop-in

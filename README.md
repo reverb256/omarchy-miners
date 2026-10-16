@@ -31,6 +31,19 @@ existing installs and pins keep working.
   transcode), earnings, k8s GPU, and models-on-disk each cost exactly one
   line (`9 LLM · 3 media · 1 transcode · 1 down`) and expand on click into
   their row lists. Read-only.
+- **AI models (controllable)**: one row per k3s AI workload — llama.cpp
+  servers (forge 4060s + 5700 XT, nexus 3060 Ti, zephyr 3090 + its pq2
+  quant), ComfyUI and YuE2 on the zephyr 3090. Each row carries the SAME
+  desired-state checkbox as the miner rows (checked = the Deployment spec
+  says it should run; a stop arms with `!` and commits on a second click
+  within 5 s; busy shows `…` and the row settles on the next poll — never
+  optimistically). Rows are independent of the miner toggles; contention on
+  a card is the user's call. Variants that share one GPU (the 3090's
+  llama vs pq2) also carry a switch chip: `→ pq2` starts the picked variant
+  and stops its sibling in one confirmed action. Host-side endpoints
+  (llama-swap, LM Studio, ollama) stay read-only in the Workloads section,
+  marked unmanaged. The nexus 3060 Ti is arbitrated by the cluster's pause
+  machinery (miner wins) — the row's tooltip says so.
 - **Earnings**: PRL coins/day from the Kryptex pool's public rate API × the
   live PRL price, converted to the configured fiat currency; the krash3 CPU
   miner's XMR estimate folds into the fleet totals.
@@ -72,6 +85,13 @@ the CLIs:
 - `GPU_FLEET` — the GPU view: per host its ssh alias, on-disk model roots
   (with scan depth), workload endpoint probes, the nvidia power fallback
   flag, and per-GPU reliability notes.
+- `AI_WORKLOADS` — the AI model servers the panel can control (k3s
+  Deployments in ns `mining`): workload id, host + card, human label, the
+  workload probe it answers as, and `switchGroup`/`variant` for variants
+  that share one GPU. The control surface is `ai-control`
+  (`start|stop|restart|status|switch <id>`): kubectl scale / rollout restart,
+  the same apiserver failover as `miner-control`. Runtime control only —
+  config changes go through git (reverb256/mining-k8s) + ArgoCD.
 
 Miners by host (unchanged):
 

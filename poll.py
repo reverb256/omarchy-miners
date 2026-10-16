@@ -78,7 +78,7 @@ def is_local(name, config):
 # up targeting a unit that does not exist.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fleet import FLEET, SSH_OPTIONS  # noqa: E402
+from fleet import FLEET, SSH_OPTIONS, AI_WORKLOADS, switch_siblings  # noqa: E402
 import gpu  # noqa: E402
 
 
@@ -889,14 +889,14 @@ def number(value, fallback=0):
     return result
 
 
-def query_k8s_deploy_replicas():
-    """Spec replicas per mining Deployment — the USER-INTENT signal.
+def query_k8s_deploy_state():
+    """Spec + ready replicas per Deployment in namespace `mining`.
 
-    On a k3s miner, replicas == 0 is a DELIBERATE pause (the panel's pause
-    control scales to zero; ArgoCD carries ignoreDifferences so it sticks).
-    Anything else with no /summary is a failure. Returns {deploy: replicas};
-    {} when kubectl is unavailable or the API does not answer — the state
-    then falls back to online/offline, never a fake "paused".
+    On a k3s workload, replicas == 0 is a DELIBERATE pause (the panel's
+    controls write that; the mining-k8s apps carry ignoreDifferences so it
+    sticks). Returns {deploy: {"spec": int, "ready": int}}; {} when kubectl
+    is unavailable or the API does not answer — callers then report
+    `unknown`, never a fake "paused".
     """
     kubectl = shutil.which("kubectl")
     if not kubectl:
@@ -921,13 +921,25 @@ def query_k8s_deploy_replicas():
         return {}
     if completed.returncode != 0:
         return {}
-    replicas = {}
+    state = {}
     try:
         for item in json.loads(completed.stdout).get("items", []):
-            replicas[item["metadata"]["name"]] = item.get("spec", {}).get("replicas", 1)
-    except (ValueError, KeyError):
+            name = item["metadata"]["name"]
+            state[name] = {
+                "spec": item.get("spec", {}).get("replicas", 1),
+                "ready": item.get("status", {}).get("readyReplicas", 0) or 0,
+            }
+    except (ValueError, KeyError, TypeError):
         return {}
-    return replicas
+    return state
+
+
+def query_k8s_deploy_replicas():
+    """Spec replicas per mining Deployment — the user-intent signal, in the
+    flat {deploy: replicas} shape callers have always used. The richer
+    spec+ready read lives in query_k8s_deploy_state(); this is a view of it,
+    so both read the SAME protocol answer."""
+    return {name: state.get("spec") for name, state in query_k8s_deploy_state().items()}
 
 
 def miner_record(host, config, entry, index, summary, reachable, paused,
@@ -1025,6 +1037,97 @@ def miner_record(host, config, entry, index, summary, reachable, paused,
     return record
 
 
+def _workload_probe_index(workloads):
+    """(host, name) -> workload record, across every workload bucket."""
+    index = {}
+    for bucket in (workloads or {}).values():
+        if not isinstance(bucket, list):
+            continue
+        for record in bucket:
+            if isinstance(record, dict):
+                index[(record.get("host"), record.get("name"))] = record
+    return index
+
+
+def build_ai_rows(deploy_state, workloads=None):
+    """One display-ready row per configured AI workload (fleet.py AI_WORKLOADS).
+
+    Same contract as the miner rows: `managed` (a k3s Deployment owns it),
+    `desired` (spec.replicas — the user intent the panel's checkbox shows),
+    `paused` (desired == 0, a DELIBERATE scale-to-0) and a `state` that folds
+    both signals: active / paused / inactive / unknown. When no apiserver
+    answered, desired is None and the state is `unknown` — never a fake
+    pause. `switchGroup` + `switchSiblings` mark the model variants that
+    share one GPU (a switch starts one and stops its siblings).
+
+    Workload-probe records that a registry entry answers as (e.g. the
+    llama-forge-4060-0 endpoint) ride along as `probe` and are MARKED
+    managed; endpoint rows with no registry entry (host llama-swap / LM
+    Studio / ollama) are marked unmanaged — read-only in the panel.
+    """
+    probe_index = _workload_probe_index(workloads)
+    for record in probe_index.values():
+        record["managed"] = False
+
+    rows = []
+    counts = {"active": 0, "paused": 0, "inactive": 0, "unknown": 0}
+    for workload_id, entry in AI_WORKLOADS.items():
+        deploy = entry.get("deploy", workload_id)
+        k8s_state = deploy_state.get(deploy) if isinstance(deploy_state, dict) else None
+        if k8s_state is None:
+            desired, ready, state = None, None, "unknown"
+        else:
+            desired = k8s_state.get("spec")
+            ready = k8s_state.get("ready")
+            if desired == 0:
+                state = "paused"
+            elif (ready or 0) > 0:
+                state = "active"
+            else:
+                state = "inactive"
+        counts[state] = counts.get(state, 0) + 1
+
+        probe_spec = entry.get("probe") or {}
+        probe = probe_index.get((probe_spec.get("host"), probe_spec.get("name"))) \
+            if probe_spec else None
+        if isinstance(probe, dict):
+            # The endpoint record carries this workload's live health/model
+            # detail, and now the same desired/paused view as the miners.
+            probe["managed"] = True
+            probe["workloadId"] = workload_id
+            probe["desired"] = desired
+            probe["paused"] = desired == 0
+
+        row = {
+            "id": workload_id,
+            "deploy": deploy,
+            "ns": entry.get("ns", "mining"),
+            "host": entry.get("host", ""),
+            "gpu": entry.get("gpu", ""),
+            "label": entry.get("label", workload_id),
+            "kind": entry.get("kind", "llm"),
+            "variant": entry.get("variant", ""),
+            # managed = a k3s Deployment owns this workload, so its spec is
+            # the DESIRED state the panel's checkbox shows (checked =
+            # replicas != 0, even while a transient fault is being healed).
+            "managed": True,
+            "controllable": True,
+            "desired": desired,
+            "ready": ready,
+            "paused": desired == 0,
+            "state": state,
+            "switchGroup": entry.get("switchGroup", ""),
+            "switchSiblings": switch_siblings(workload_id),
+            # Static card note (e.g. the nexus 3060 Ti's arbitration by the
+            # pause machinery) — display-only, never a control rule.
+            "hint": entry.get("hint", ""),
+        }
+        if isinstance(probe, dict):
+            row["probe"] = probe
+        rows.append(row)
+    return {"rows": rows, "counts": counts, "configured": len(rows), "error": ""}
+
+
 def poll_fleet():
     hosts = {}
     miners = []
@@ -1043,8 +1146,12 @@ def poll_fleet():
         vm_summaries = query_vm_summaries()
     except Exception:
         vm_summaries = {}
-    # Fresh user-intent state: which k3s miner Deployments are scaled to zero.
-    deploy_replicas = query_k8s_deploy_replicas()
+    # Fresh user-intent state: spec + ready replicas for every Deployment in
+    # ns mining — the miners' paused flags AND the AI rows read the one
+    # answer. deploy_replicas keeps the flat {deploy: spec} shape the broker
+    # coverage check has always used.
+    deploy_state = query_k8s_deploy_state()
+    deploy_replicas = {name: state.get("spec") for name, state in deploy_state.items()}
     covered = broker_covered(vm_summaries, deploy_replicas)
 
     # Remote hosts are probed in parallel: each is one ssh round trip, and doing
@@ -1183,6 +1290,22 @@ def poll_fleet():
             "error": str(error),
         }
 
+    # AI workload rows: the k3s model servers the panel can control, carrying
+    # the same managed / desired / paused vocabulary as the miner rows.
+    # Additive like the GPU view — a failure here reports itself and never
+    # takes the miners or the GPU sections down with it.
+    try:
+        ai_view = build_ai_rows(
+            deploy_state,
+            (gpu_view.get("workloads") or {}) if isinstance(gpu_view, dict) else {},
+        )
+    except Exception as error:  # noqa: BLE001 - additive section, never fatal
+        ai_view = {
+            "rows": [], "configured": 0,
+            "counts": {"active": 0, "paused": 0, "inactive": 0, "unknown": 0},
+            "error": str(error),
+        }
+
     totals = {
         "hashrate": fleet_hashrate,
         "power": fleet_power,
@@ -1196,7 +1319,7 @@ def poll_fleet():
     totals.update(gpu_view.get("totals") or {})
 
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "hosts": hosts,
         "miners": miners,
         "gpus": gpu_view.get("gpus") or [],
@@ -1204,6 +1327,7 @@ def poll_fleet():
         "workloads": gpu_view.get("workloads") or {},
         "k8s": gpu_view.get("k8s") or {},
         "models": gpu_view.get("models") or [],
+        "ai": ai_view,
         "totals": totals,
     }
 

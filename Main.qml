@@ -41,6 +41,9 @@ Item {
   property var k8sNodes: []
   property var k8sPods: []
   property var modelFiles: []
+  // AI rows — the k3s model servers the panel can control (poll.py's `ai`
+  // section): managed / desired / paused, same contract as the miner rows.
+  property var aiRows: []
   property int gpuTotal: 0
   property int modelsLoaded: 0
   property int modelsOnDisk: 0
@@ -171,6 +174,8 @@ Item {
     for (var f = 0; f < files.length; f++)
       files[f].sizeText = Format.formatStorage(files[f].bytes)
     modelFiles = files
+    var aiSection = parsed.ai || ({})
+    aiRows = Array.isArray(aiSection.rows) ? aiSection.rows : []
     gpuTotal = Number(totals.gpuTotal || 0)
     modelsLoaded = Number(totals.modelsLoaded || 0)
     modelsOnDisk = Number(totals.modelsOnDisk || 0)
@@ -408,7 +413,9 @@ Item {
 
     Process {
       id: action
-      property string unit: ""
+      // Busy keys this action marks in flight (one for a miner action, the
+      // pair for a model switch): every key settles when the helper exits.
+      property var busyKeys: []
       property string label: ""
       running: false
 
@@ -416,7 +423,8 @@ Item {
       stderr: StdioCollector { id: actionStderr; waitForEnd: true }
 
       onExited: function(exitCode) {
-        root.markBusy(action.unit, false)
+        for (var k = 0; k < action.busyKeys.length; k++)
+          root.markBusy(action.busyKeys[k], false)
 
         var message = ""
         try {
@@ -448,7 +456,7 @@ Item {
     if (!miner || isBusy(miner.unit)) return
     markBusy(miner.unit, true)
     var process = actionComponent.createObject(root, {
-      unit: String(miner.unit),
+      busyKeys: [String(miner.unit)],
       label: String(miner.host) + " " + String(miner.label),
       command: ["python3", pluginDir + "/miner-control", action, String(miner.host), String(miner.unit)]
     })
@@ -472,6 +480,49 @@ Item {
     var shouldRun = miner.managed ? !miner.paused : miner.online
     if (shouldRun) pause(miner)
     else resume(miner)
+  }
+
+  // ------------------------------------------------------------- AI control
+  // The model servers' privilege boundary, exactly like miner-control is the
+  // miners': ai-control takes one action + one workload id and resolves
+  // everything else itself. A switch marks BOTH rows busy (it stops the
+  // sibling and starts the target), so neither can be flipped mid-flight.
+
+  function runAiAction(action, row, busyRows) {
+    if (!row) return
+    var targets = busyRows || [row]
+    var keys = []
+    for (var i = 0; i < targets.length; i++) keys.push("ai:" + String(targets[i].id))
+    for (var k = 0; k < keys.length; k++) if (isBusy(keys[k])) return
+    for (var m = 0; m < keys.length; m++) markBusy(keys[m], true)
+    var process = actionComponent.createObject(root, {
+      busyKeys: keys,
+      label: String(row.host) + " " + String(row.id),
+      command: ["python3", pluginDir + "/ai-control", action, String(row.id)]
+    })
+    if (!process) {
+      for (var u = 0; u < keys.length; u++) markBusy(keys[u], false)
+      root.actionFailed("Could not start the AI control helper")
+      return
+    }
+    process.running = true
+  }
+
+  function aiToggle(row) {
+    if (!row) return
+    if (row.controllable === false || row.state === "unknown") return
+    // Same desired-state rule as the miner rows: unchecked = the user wants
+    // it running, checked = it should run (flipping = stop).
+    var shouldRun = row.managed ? !row.paused : row.state === "active"
+    if (shouldRun) runAiAction("stop", row)
+    else runAiAction("start", row)
+  }
+
+  // Model switch: ONE ai-control invocation starts the picked variant and
+  // stops its sibling(s); both rows show pending until the poll settles.
+  function aiSwitch(fromRow, toRow) {
+    if (!fromRow || !toRow) return
+    runAiAction("switch", toRow, [fromRow, toRow])
   }
 
   // ---------------------------------------------------------------- format
