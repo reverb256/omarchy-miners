@@ -132,3 +132,41 @@ print(
     if ok else f"FAIL spec={spec} state={state} row={row}"
 )
 PY
+
+# --- GPU fleet gates (2.2.0) -------------------------------------------------
+
+printf 'G23 gpu view in poll      : '
+python3 ./poll.py | python3 -c "import sys,json;d=json.load(sys.stdin);g=d.get('gpus') or [];ok=g and all(k in g[0] for k in ('host','index','name','util','vramUsed','vramTotal'));print(('ok (%d gpus)'%len(g)) if ok else 'FAIL:'+str(g[:1]))"
+
+printf 'G24 workload sections     : '
+python3 ./poll.py | python3 -c "import sys,json;d=json.load(sys.stdin);w=d.get('workloads') or {};ok=all(k in w for k in ('llm','image','audio','transcode')) and isinstance(w.get('llm'),list);print('ok' if ok else 'FAIL:'+str(sorted(w.keys())))"
+
+printf 'G25 identity kept         : '
+python3 -c "import json;m=json.load(open('manifest.json'));ok=m['id']=='io.github.jkro.miners' and m['name']=='GPU Fleet';print('ok' if ok else 'FAIL:'+str(m.get('id'))+' '+str(m.get('name')))"
+
+# G26/G27: stopping a miner must never be possible without an explicit click
+# plus a confirmation. Static markers: the row's armed-stop state (stopConfirm)
+# and the keyboard's armed-stop index (cursorConfirmIndex). Counts print; >=1
+# is the pass.
+printf 'G26 stop needs confirm    : '
+grep -c 'stopConfirm' MinerRow.qml
+
+printf 'G27 keyboard confirm      : '
+grep -c 'cursorConfirmIndex' Panel.qml
+
+# G28: the dashboard side stays READ-ONLY. poll.py/gpu.py must contain no
+# miner-control invocation and no kubectl mutation verb.
+printf 'G28 dashboard read-only   : '
+python3 - <<'PY'
+import re
+bad = []
+for name in ('poll.py', 'gpu.py'):
+    source = open(name).read()
+    for token in ("'miner-control'", '"miner-control"'):
+        if token in source:
+            bad.append(name + ':miner-control')
+    for match in re.finditer(r'^\s*[^#\n]*kubectl[^\n]*$', source, re.M):
+        if re.search(r'\b(scale|rollout|delete|apply|patch|annotate|edit)\b', match.group(0)):
+            bad.append(name + ':kubectl-mutate')
+print('ok' if not bad else 'FAIL:' + ','.join(bad))
+PY

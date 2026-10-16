@@ -74,3 +74,21 @@ function formatCoins(value) {
   if (amount >= 1) return amount.toFixed(2)
   return amount.toFixed(4)
 }
+
+// Storage sizes for VRAM and model files (KiB/MiB/GiB) — decimal-ish
+// binary units, matching what `du`-style tools print.
+function formatStorage(bytes) {
+  var value = Number(bytes)
+  if (!isFinite(value) || value <= 0) return "—"
+  var units = ["B", "KB", "MB", "GB", "TB"]
+  var tier = 0
+  while (value >= 1024 && tier < units.length - 1) {
+    value /= 1024
+    tier++
+  }
+  return value.toFixed(value < 10 ? 1 : 0) + " " + units[tier]
+}
+
+function formatMiB(mib) {
+  return formatStorage(Number(mib) * 1048576)
+}

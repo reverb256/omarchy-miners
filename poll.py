@@ -3,7 +3,11 @@
 
 The shell panel does no discovery and no flattening of its own: this script
 emits a flat `miners` list, per-host rollups, and fleet totals, so the QML
-delegates bind straight to it.
+delegates bind straight to it. Since 2.2.0 it also carries the GPU view —
+`gpus` (per-GPU util/VRAM/power/temp/clocks/owner), `workloads` (LLM, image,
+audio, transcodes), `k8s` (GPU nodes + pods) and `models` (on-disk files) —
+produced read-only by gpu.py (its own ~20 s cache keeps the ssh fan-out out
+of every tick).
 
 Unit names are DATA, not derived. Each host owns its own naming:
 
@@ -56,30 +60,17 @@ def is_local(name, config):
     zephyr is remote and must be read over its ssh alias.
     """
     return bool(config.get("local")) and name == HOST_NAME
-SSH_OPTIONS = [
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=6",
-    # One connection per host instead of one per miner. The miner APIs bind
-    # 127.0.0.1 only, so each remote host needs a curl run on the host itself;
-    # opening a session per port trips sshd's MaxStartups throttling
-    # (kex_exchange_identification: Connection reset by peer) and every probe
-    # after the first fails.
-    "-o", "ServerAliveInterval=5",
-    # Multiplexing: every bar on every monitor runs its own copy of this
-    # poller, so sessions to one host overlap several times a minute. One
-    # shared master connection removes the connect/kex/auth churn (Windows
-    # sshd resets sessions under it) and makes repeat probes much faster.
-    "-o", "ControlMaster=auto",
-    "-o", f"ControlPath=/run/user/{os.getuid()}/ssh-miners-%C",
-    "-o", "ControlPersist=60",
-]
+
+# SSH_OPTIONS (with the mux path and timeouts) lives in fleet.py now — gpu.py
+# shares it, so the master connections are reused across both probes.
 
 # The fleet definition lives in fleet.py so poll.py and miner-control cannot
 # drift apart on unit names — two copies of these strings is how a pause ends
 # up targeting a unit that does not exist.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fleet import FLEET  # noqa: E402
+from fleet import FLEET, SSH_OPTIONS  # noqa: E402
+import gpu  # noqa: E402
 
 
 def query_miner(ip, port):
@@ -660,14 +651,14 @@ def poll_fleet():
             # One peakminer instance drives one GPU, so the first entry is the
             # one this unit owns. Fall back to the summary's own totals when a
             # build reports per-miner figures only.
-            gpu = gpus[0] if gpus else {}
+            gpu_entry = gpus[0] if gpus else {}
 
-            gpu_power = number(gpu.get("power_w",
+            gpu_power = number(gpu_entry.get("power_w",
                 summary.get("power_w") if summary else 0))
 
             # Fallback: miner API reports null power. Use nvidia-smi Power
             # Samples Avg indexed by GPU id.
-            gpu_id = gpu.get("id", i)
+            gpu_id = gpu_entry.get("id", i)
             if gpu_power == 0 and online and isinstance(gpu_id, int) and gpu_id < len(host_nvidia):
                 gpu_power = host_nvidia[gpu_id]
 
@@ -682,7 +673,7 @@ def poll_fleet():
                 "hostReachable": bool(reachable),
                 # The GPU names itself when it is running; the configured label
                 # keeps a stopped miner identifiable.
-                "label": gpu.get("name") or entry["label"],
+                "label": gpu_entry.get("name") or entry["label"],
                 "powerLimit": number(entry.get("powerLimit")),
                 "online": online,
                 # paused = user intent (deployment scaled to 0); state folds
@@ -694,11 +685,11 @@ def poll_fleet():
                 # healed). Unmanaged rows fall back to live state.
                 "managed": bool(k8s),
                 "state": state,
-                "hashrate": number(gpu.get("hashrate", summary.get("hashrate") if summary else 0)),
+                "hashrate": number(gpu_entry.get("hashrate", summary.get("hashrate") if summary else 0)),
                 "power": gpu_power,
-                "temp": number(gpu.get("temperature_c")),
-                "fan": number(gpu.get("fan_pct")),
-                "util": number(gpu.get("utilization_pct")),
+                "temp": number(gpu_entry.get("temperature_c")),
+                "fan": number(gpu_entry.get("fan_pct")),
+                "util": number(gpu_entry.get("utilization_pct")),
             }
             # The Kryptex app rig has no unit to control: the panel hides the
             # pause/resume button when controllable is false.
@@ -738,18 +729,43 @@ def poll_fleet():
         fleet_hashrate += host_hashrate
         fleet_power += host_power
 
+    # GPU + workload view: read-only, cached ~20 s inside gpu.py. A failure
+    # here must never take the miners down with it — the panel renders the
+    # sections it gets.
+    try:
+        gpu_view = gpu.collect()
+    except Exception as error:  # noqa: BLE001 - additive section, never fatal
+        gpu_view = {
+            "gpus": [], "gpuHosts": {},
+            "workloads": {"llm": [], "image": [], "audio": [], "transcode": []},
+            "k8s": {"ok": False, "nodes": [], "pods": [], "deploys": {}},
+            "models": [],
+            "totals": {},
+            "error": str(error),
+        }
+
+    totals = {
+        "hashrate": fleet_hashrate,
+        "power": fleet_power,
+        "gpus": gpu_count,
+        "online": online_count,
+        "paused": paused_count,
+        "configured": configured_count,
+    }
+    # GPU totals carry their own names (gpuTotal, modelsLoaded, …); "gpus"
+    # above stays the mining-GPU count the hero has always shown.
+    totals.update(gpu_view.get("totals") or {})
+
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "hosts": hosts,
         "miners": miners,
-        "totals": {
-            "hashrate": fleet_hashrate,
-            "power": fleet_power,
-            "gpus": gpu_count,
-            "online": online_count,
-            "paused": paused_count,
-            "configured": configured_count,
-        },
+        "gpus": gpu_view.get("gpus") or [],
+        "gpuHosts": gpu_view.get("gpuHosts") or {},
+        "workloads": gpu_view.get("workloads") or {},
+        "k8s": gpu_view.get("k8s") or {},
+        "models": gpu_view.get("models") or [],
+        "totals": totals,
     }
 
 

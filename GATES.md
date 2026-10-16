@@ -25,6 +25,13 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G19 | Revenue feed works | `./prl-revenue --hashrate 1000000000000` returns `rateCoinsPerHsDay` and `price` | `ok` |
 | G20 | krash3 rig readable | `poll.py` reports the krash3 row with `hostReachable` true. The rig's mining is toggled on/off by the box's user (gaming machine), so idle prints as `ok (idle)` — only an unreachable host fails | `ok (mining)` / `ok (idle)` |
 | G21 | Control fails over | `miner-control status` with `KUBECONFIG` pointing at a dead server (10.1.1.199) — must land via a peer | `ok (failover)` |
+| G22 | Pause vs failure | miner-control state == poll.py `paused` == Deployment spec, both states | `ok (...)` |
+| G23 | GPU view in poll | `python3 poll.py` emits `gpus[]` with host/index/name/util/vramUsed/vramTotal | `ok (N gpus)`, N ≥ 1 |
+| G24 | Workload sections | poll JSON carries `workloads.llm/image/audio/transcode` | `ok` |
+| G25 | Identity kept | manifest `id == io.github.jkro.miners`, `name == "GPU Fleet"` | `ok` |
+| G26 | Stop needs confirm | `grep -c 'stopConfirm' MinerRow.qml` — the armed-stop marker | count ≥ 1 |
+| G27 | Keyboard confirm | `grep -c 'cursorConfirmIndex' Panel.qml` — Enter also two-steps a stop | count ≥ 1 |
+| G28 | Dashboard read-only | `poll.py`/`gpu.py` contain no `miner-control` invocation and no kubectl mutation verb | `ok` |
 
 CONTROL-PATH FAILOVER (2026-09-24): the kubeconfig pins ONE apiserver, so the
 nexus-k3s outage made every panel start/stop fail while the cluster stayed

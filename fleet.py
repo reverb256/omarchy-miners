@@ -40,6 +40,8 @@ stopped+disabled and remain the documented rollback path.
 
 from __future__ import annotations
 
+import os
+
 # host -> connection facts + configured miners.
 #   local     run systemctl here instead of over ssh
 #   unit      the EXACT systemd unit, verified on the host
@@ -152,6 +154,143 @@ FLEET = {
                 "powerLimit": 115,
             },
         ],
+    },
+}
+
+
+# Same mux options as poll.py: every bar on every monitor runs its own copy,
+# so sessions to one host overlap several times a minute. One shared master
+# connection removes the connect/kex/auth churn and makes repeat probes fast.
+SSH_OPTIONS = [
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=6",
+    # One connection per host instead of one per miner. The miner APIs bind
+    # 127.0.0.1 only, so each remote host needs a curl run on the host itself;
+    # opening a session per port trips sshd's MaxStartups throttling
+    # (kex_exchange_identification: Connection reset by peer) and every probe
+    # after the first fails.
+    "-o", "ServerAliveInterval=5",
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath=/run/user/{os.getuid()}/ssh-miners-%C",
+    "-o", "ControlPersist=60",
+]
+
+
+# ---------------------------------------------------------------------------
+# GPU + workload inventory (read-only) — one source of truth for gpu.py.
+#
+# This is DATA about where things live, not code. gpu.py probes each host in
+# ONE ssh session per refresh: nvidia-smi, amdgpu sysfs, model-server
+# endpoints on 127.0.0.1 (the same loopback rule the miner APIs follow), and
+# a bounded model-file find where roots are configured.
+#
+#   gpu_note          per-GPU reliability overrides (matched on the GPU name)
+#   powerFallback     true = also run `nvidia-smi -q -d POWER`; some builds
+#                     report an N/A instantaneous draw and the Power Samples
+#                     average is the only usable number
+#   models            on-disk model roots; depth = find -maxdepth
+#   workloads         endpoint probes. type:
+#                     llama_server / llama_swap / lmstudio / ollama /
+#                     comfyui / http / transcodes / k8s_deploy
+# ---------------------------------------------------------------------------
+GPU_FLEET = {
+    "zephyr": {
+        "ssh": "zephyr",
+        "local": True,
+        "user": "j_kro",
+        "gpu_notes": [
+            {
+                "match": "3090",
+                "tempReliable": False,
+                "fanReliable": False,
+                "note": "EVGA hybrid: onboard fan/temp sensors are unreliable — not alerted on",
+            },
+        ],
+        "models": [
+            {"path": "~/models", "depth": 3},
+            {"path": "~/StabilityMatrix/Models", "depth": 3},
+            {"path": "~/.cache/huggingface/hub", "depth": 4},
+        ],
+        "workloads": [
+            # The one loopback endpoint that fans out to every locally
+            # reachable model server (llama-swap `peers`; pair-aggregator).
+            {"type": "llama_swap", "name": "PAIR aggregator", "kind": "llm", "port": 1235},
+            # The k3s llama-zephyr-3090 pod's in-pod llama-swap.
+            {"type": "llama_swap", "name": "llama-zephyr-3090", "kind": "llm", "port": 21590},
+            # k3s ComfyUI on the 3090 (NodePort published on every node).
+            {"type": "comfyui", "name": "ComfyUI", "kind": "image", "port": 32188},
+            # k3s voice-models (TTS) on the 3060 Ti (NodePort).
+            {"type": "http", "name": "voice-models", "kind": "audio", "port": 30805,
+             "healthPath": "/health"},
+            # k3s YuE2 music generator — scaled to 0 when idle (deployment spec
+            # is the truth; the service is only probed while replicas > 0).
+            {"type": "k8s_deploy", "name": "yue2", "kind": "audio",
+             "namespace": "mining", "deploy": "yue2-zephyr",
+             "serviceIP": "10.43.95.191", "port": 8080},
+        ],
+    },
+    "nexus": {
+        "ssh": "nexus",
+        "local": False,
+        "user": "j_kro",
+        "models": [
+            {"path": "~/models", "depth": 3},
+            {"path": "~/.lmstudio/models", "depth": 4},
+        ],
+        "workloads": [
+            # LM Studio server managed by the llmster pod (hostNetwork).
+            {"type": "lmstudio", "name": "LM Studio (llmster)", "kind": "llm", "port": 1235},
+            {"type": "ollama", "name": "ollama", "kind": "llm", "port": 11434},
+        ],
+    },
+    "forge": {
+        "ssh": "forge",
+        "local": False,
+        "user": "j_kro",
+        "powerFallback": True,
+        "models": [
+            {"path": "~/models", "depth": 3},
+            {"path": "/models", "depth": 3},
+        ],
+        "workloads": [
+            # llama-server trio: 4060 #0, 4060 #1, and the AMD (Vulkan) card.
+            {"type": "llama_server", "name": "llama-forge-4060-0", "kind": "llm", "port": 21582},
+            {"type": "llama_server", "name": "llama-forge-4060-1", "kind": "llm", "port": 21583},
+            {"type": "llama_server", "name": "llama-forge-5700xt", "kind": "llm", "port": 21580},
+            {"type": "lmstudio", "name": "LM Studio (llmster)", "kind": "llm", "port": 1235},
+            {"type": "ollama", "name": "ollama", "kind": "llm", "port": 11434},
+        ],
+    },
+    "sentry": {
+        "ssh": "sentry",
+        "local": False,
+        "user": "j_kro",
+        "transcodes": True,
+        "models": [],
+        "workloads": [
+            # Jellyfin runs as a k3s pod on sentry-agent; each transcode is a
+            # jellyfin-ffmpeg process visible to the host (`pgrep -x ffmpeg`).
+            {"type": "transcodes", "name": "Jellyfin", "kind": "transcode"},
+        ],
+    },
+    "krash2": {
+        "ssh": "krash2",
+        "local": False,
+        "user": "krash",
+        "platform": "windows",
+        "powerFallback": True,
+        "models": [],
+        "workloads": [],
+    },
+    "krash3": {
+        "ssh": "krash3",
+        "local": False,
+        "user": "j_kro",
+        "platform": "windows",
+        "powerFallback": True,
+        # Monitor-only (Kryptex app): GPU row only.
+        "models": [],
+        "workloads": [],
     },
 }
 
