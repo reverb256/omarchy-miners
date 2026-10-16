@@ -4,6 +4,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "util/format.js" as Format
+import "Model.js" as Model
 
 // The data side of the miners panel. All polling and shelling out lives here,
 // so Panel.qml only binds to finished records — the same split the first-party
@@ -30,6 +31,26 @@ Item {
   property int onlineCount: 0
   property int configuredCount: 0
   property int pausedCount: 0
+
+  // GPU fleet view (read-only; produced by gpu.py, cached ~20 s there).
+  property var gpus: []
+  property var gpuHosts: ({})
+  property var llmWorkloads: []
+  property var imageAudioWorkloads: []
+  property var transcodeWorkloads: []
+  property var k8sNodes: []
+  property var k8sPods: []
+  property var modelFiles: []
+  property int gpuTotal: 0
+  property int modelsLoaded: 0
+  property int modelsOnDisk: 0
+  property real vramUsed: 0
+  property real vramTotal: 0
+
+  readonly property int tempWarnC: Number(setting("tempWarnC", 70))
+  readonly property int tempAlarmC: Number(setting("tempAlarmC", 80))
+  // The bar's alert list: unreliable sensors are already excluded inside.
+  readonly property var gpuAlertList: Model.gpuIssues(gpus, tempWarnC, tempAlarmC)
 
   property bool initialized: false
   property bool refreshing: false
@@ -116,6 +137,45 @@ Item {
     onlineCount = Number(totals.online || 0)
     configuredCount = Number(totals.configured || 0)
     pausedCount = Number(totals.paused || 0)
+
+    // ---- GPU fleet view ------------------------------------------------
+    var gpuRecords = Array.isArray(parsed.gpus) ? parsed.gpus : []
+    for (var g = 0; g < gpuRecords.length; g++) {
+      var gpu = gpuRecords[g]
+      gpu.shortName = Model.gpuShortName(gpu.name)
+      gpu.utilText = (gpu.util === null || gpu.util === undefined) ? "—" : Math.round(gpu.util) + "%"
+      gpu.vramText = (!gpu.vramTotal) ? "—"
+        : Format.formatMiB(gpu.vramUsed || 0) + " / " + Format.formatMiB(gpu.vramTotal)
+      gpu.vramRatio = gpu.vramTotal > 0 ? Math.min(1, (gpu.vramUsed || 0) / gpu.vramTotal) : -1
+      gpu.powerText = Format.formatPower(gpu.power)
+      gpu.tempText = Format.formatTemp(gpu.temp)
+      gpu.fanText = Format.formatFan(gpu.fan)
+      var clocks = []
+      if (gpu.clockCore) clocks.push(String(Math.round(gpu.clockCore)))
+      if (gpu.clockMem) clocks.push(String(Math.round(gpu.clockMem)))
+      gpu.clockText = clocks.length > 0 ? clocks.join("/") + " MHz" : ""
+    }
+    gpus = gpuRecords
+    gpuHosts = parsed.gpuHosts || ({})
+    var views = parsed.workloads || ({})
+    llmWorkloads = Array.isArray(views.llm) ? views.llm : []
+    var media = []
+    if (Array.isArray(views.image)) media = media.concat(views.image)
+    if (Array.isArray(views.audio)) media = media.concat(views.audio)
+    imageAudioWorkloads = media
+    transcodeWorkloads = Array.isArray(views.transcode) ? views.transcode : []
+    var cluster = parsed.k8s || ({})
+    k8sNodes = Array.isArray(cluster.nodes) ? cluster.nodes : []
+    k8sPods = Array.isArray(cluster.pods) ? cluster.pods : []
+    var files = Array.isArray(parsed.models) ? parsed.models : []
+    for (var f = 0; f < files.length; f++)
+      files[f].sizeText = Format.formatStorage(files[f].bytes)
+    modelFiles = files
+    gpuTotal = Number(totals.gpuTotal || 0)
+    modelsLoaded = Number(totals.modelsLoaded || 0)
+    modelsOnDisk = Number(totals.modelsOnDisk || 0)
+    vramUsed = Number(totals.vramUsed || 0)
+    vramTotal = Number(totals.vramTotal || 0)
     lastUpdatedAt = Date.now()
   }
 

@@ -53,6 +53,35 @@ Item {
 
   signal toggleRequested()
 
+  // Stopping a miner is deliberate: the first click ARMS this row (the box
+  // turns urgent and shows "!"), a second click within 5 s commits, and the
+  // arm expiring cancels. Resuming needs a single click. Nothing in this
+  // panel can stop a miner without the explicit click-plus-confirm pair.
+  property bool stopConfirm: false
+
+  function wouldStop() {
+    if (!root.miner) return false
+    return root.miner.managed ? !root.miner.paused : root.online
+  }
+
+  function requestToggle() {
+    if (root.busy) return
+    if (root.wouldStop() && !root.stopConfirm) {
+      root.stopConfirm = true
+      stopConfirmTimer.restart()
+      return
+    }
+    root.stopConfirm = false
+    root.toggleRequested()
+  }
+
+  Timer {
+    id: stopConfirmTimer
+    interval: 5000
+    repeat: false
+    onTriggered: root.stopConfirm = false
+  }
+
   function alpha(color, amount) {
     return Qt.rgba(color.r, color.g, color.b, amount)
   }
@@ -134,9 +163,12 @@ Item {
       // miner's DESIRED state (a k3s miner: its Deployment spec — checked
       // means "should be running", so a transient outage keeps the box
       // checked while the fleet self-heals; unmanaged rows fall back to live
-      // state). A flip requests a pause/resume through the one in-flight
-      // action path; `busy` shows a pending mark and swallows further flips,
-      // and the box settles when the next poll lands — never optimistically.
+      // state). Flipping it OFF (a stop) asks for one more click first —
+      // stopConfirm arms the box, and only the confirmed flip reaches
+      // miner-control. A flip requests pause/resume through the one
+      // in-flight action path; `busy` shows a pending mark and swallows
+      // further flips, and the box settles when the next poll lands — never
+      // optimistically.
       Item {
         id: control
         anchors.right: parent.right
@@ -156,7 +188,9 @@ Item {
           color: control.checked
             ? Style.selectedFillFor(root.foreground, Color.accent)
             : Style.normalFillFor(root.foreground, Color.accent)
-          borderSpec: Border.controlSpec(control.checked ? "selected" : "normal", root.foreground, Color.accent)
+          borderSpec: root.stopConfirm
+            ? Border.flat(root.alpha(root.urgent, 0.5), 1)
+            : Border.controlSpec(control.checked ? "selected" : "normal", root.foreground, Color.accent)
           opacity: root.busy ? 0.55 : 1
 
           Behavior on color { ColorAnimation { duration: Style.duration(120) } }
@@ -165,8 +199,11 @@ Item {
             anchors.centerIn: parent
             // The pending mark keeps the box honest while the helper runs:
             // the tick appears only once the poller confirms the new state.
-            text: root.busy ? "…" : (control.checked ? "\u{F012C}" : "")
-            color: control.checked ? Style.selectedStateColor(root.foreground, Color.accent) : root.dim
+            // "!" is the armed-to-stop state — a second click commits.
+            text: root.busy ? "…" : (root.stopConfirm ? "!" : (control.checked ? "\u{F012C}" : ""))
+            color: root.stopConfirm
+              ? root.urgent
+              : (control.checked ? Style.selectedStateColor(root.foreground, Color.accent) : root.dim)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             textFormat: Text.PlainText
@@ -177,7 +214,7 @@ Item {
           anchors.fill: parent
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor
-          onClicked: if (!root.busy) root.toggleRequested()
+          onClicked: root.requestToggle()
         }
       }
     }
@@ -330,7 +367,11 @@ Item {
         + "\nport " + String(root.miner.port)
         + (root.online ? "\n" + root.miner.hashrateText + " · " + root.miner.powerText
                        : (root.paused ? "\npaused by user (deployment scaled to 0)" : "\nstopped"))
-        + (root.controllable && !root.unknown ? "\ncheckbox: pause / resume" : "")
+        + (root.controllable && !root.unknown
+            ? (root.stopConfirm
+                ? "\nclick again to pause — stopping a miner needs confirmation"
+                : "\ncheckbox: pause (asks again) / resume")
+            : "")
         + (root.online && root.earningsText !== "" ? "\n" + root.earningsText + " at the current pool rate" : "")
         + (root.online && Number(root.miner.xmrigHashrate || 0) > 0
             ? "\nXMR " + root.miner.xmrigText + " · " + Number(root.miner.xmrigShares || 0).toFixed(0) + " shares"

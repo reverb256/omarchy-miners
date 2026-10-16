@@ -84,8 +84,19 @@ BarWidget {
   // pickaxe fell through to a fallback font and sat off-baseline.
   readonly property string minerGlyph: "\u{F08B7}"
 
-  // Heat is the one thing worth pulling the eye to the bar for.
+  // The loaded-model count rides next to the hashrate and the GPU alert list
+  // (heat + VRAM pressure; unreliable sensors excluded in Model.js) turns
+  // the widget urgent — the whole fleet answer at a glance.
+  readonly property string modelsGlyph: "\u{F2DB}"   // nf-fa-microchip
+  readonly property string modelsText: fleetData.modelsLoaded > 0
+    ? root.modelsGlyph + " " + fleetData.modelsLoaded
+    : ""
+  readonly property bool gpuAlarming: fleetData.gpuAlertList.length > 0
+
+  // Heat is the one thing worth pulling the eye to the bar for — plus the
+  // GPU alerts (which already skip unreliable sensors).
   readonly property bool alarming: {
+    if (root.gpuAlarming) return true
     var miners = fleetData.miners
     for (var i = 0; i < miners.length; i++) {
       if (miners[i].online && Number(miners[i].temp || 0) >= root.tempAlarmC) return true
@@ -105,16 +116,23 @@ BarWidget {
     }
     var text = Format.formatHashrate(fleetData.totalHashrate)
     if (showPower) text += "  " + Format.formatPower(fleetData.totalPower)
+    if (root.modelsText !== "") text += "  " + root.modelsText
     return text
   }
 
   readonly property string tooltipSummary: {
-    if (fleetData.lastError !== "") return "Miners: " + fleetData.lastError
-    if (!fleetData.initialized) return "Miners: loading…"
-    if (!fleetData.anyOnline) return "Miners: nothing running (" + fleetData.configuredCount + " configured)"
+    if (fleetData.lastError !== "") return "GPU Fleet: " + fleetData.lastError
+    if (!fleetData.initialized) return "GPU Fleet: loading…"
+    if (!fleetData.anyOnline) return "GPU Fleet: nothing running (" + fleetData.configuredCount + " configured)"
     var lines = ["Fleet  " + Format.formatHashrate(fleetData.totalHashrate)
       + "  ·  " + Format.formatPower(fleetData.totalPower)
       + "  ·  " + fleetData.gpuCount + " GPU" + (fleetData.gpuCount === 1 ? "" : "s")]
+    if (fleetData.gpuTotal > 0)
+      lines.push("GPUs  " + fleetData.gpuTotal
+        + "  ·  VRAM " + Format.formatMiB(fleetData.vramUsed) + " / " + Format.formatMiB(fleetData.vramTotal)
+        + "  ·  " + fleetData.modelsLoaded + " model" + (fleetData.modelsLoaded === 1 ? "" : "s") + " loaded")
+    for (var a = 0; a < fleetData.gpuAlertList.length && a < 3; a++)
+      lines.push("! " + fleetData.gpuAlertList[a])
     for (var i = 0; i < fleetData.miners.length; i++) {
       var miner = fleetData.miners[i]
       if (!miner.online) continue

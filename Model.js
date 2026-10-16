@@ -66,3 +66,35 @@ function baselineCheck(gpuName, hashrate) {
   if (hr < baseline.min * 0.8) return "warning"
   return "normal"
 }
+
+// ---------------------------------------------------------------- GPU view
+// The GPU fleet alerts: heat and VRAM pressure only. Power is normally
+// pinned at the limit on a mining card — alerting on it would mark every
+// healthy miner as a problem. Temperature alerts fire at the ALARM
+// threshold only: a mining card sits near the warm threshold by design, and
+// a warn-tier bar alert on every rig is noise, not signal (the reader still
+// sees warn-level temps coloured in the panel rows). A GPU whose temp sensor
+// is flagged unreliable (fleet.py gpu_notes; zephyr's 3090 EVGA hybrid) is
+// skipped for temp entirely.
+
+function gpuShortName(name) {
+  return String(name || "").replace(/^NVIDIA GeForce /, "").replace(/^AMD Radeon /, "")
+}
+
+function gpuIssues(gpus, warnC, alarmC) {
+  var out = []
+  var list = gpus || []
+  for (var i = 0; i < list.length; i++) {
+    var gpu = list[i]
+    var label = String(gpu.host || "?") + " " + gpuShortName(gpu.name)
+    var tempReliable = !gpu.reliable || gpu.reliable.temp !== false
+    var temp = Number(gpu.temp || 0)
+    if (tempReliable && temp > 0 && temp >= alarmC)
+      out.push(label + " · " + temp.toFixed(0) + "°C (hot)")
+    var total = Number(gpu.vramTotal || 0)
+    var used = Number(gpu.vramUsed || 0)
+    if (total > 0 && used / total >= 0.97)
+      out.push(label + " · VRAM " + Math.round(100 * used / total) + "% full")
+  }
+  return out
+}
