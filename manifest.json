@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jkro.miners",
   "name": "GPU Fleet",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "author": "j_kro",
   "license": "MIT",
   "description": "Fleet-wide GPU work management in the Omarchy bar: per-GPU utilization, VRAM, power, temperature, clocks and owning workload; miners with hashrate, power, pause/resume and estimated PRL/XMR earnings; LLM, image/audio and Jellyfin transcode workloads; k3s GPU pods; on-disk model inventory. Read-only by default — the only control (miner pause/resume) needs an explicit click plus confirmation.",
