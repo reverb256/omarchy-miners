@@ -17,9 +17,14 @@ Unit names are DATA, never derived. Each host names its miners its own way:
           -> peakminer-forge-4060-0.service, peakminer-forge-4060-1.service
   krash2  Windows 11, NSSM service (krash2 SSH alias, user 'krash')
           -> pearlhash (NSSM service name)
+          Row data comes from the read-only collector (source=collector,
+          windows-collector-contract.md); the ssh read stays as the fallback.
+          The box is virus-quarantined: collector data is HOSTILE input and
+          poll.py validates it before use. MONITOR-ONLY (control=none).
   krash3  Windows 11, the Kryptex desktop app (krash3 SSH alias, user j_kro).
           Monitor-only — there is no unit to control. Data comes from the
-          app's bundled miners: SRBMiner HTTP API for PRL (LAN-visible),
+          collector first (source=collector), falling back to the ssh read:
+          the app's bundled miners — SRBMiner HTTP API for PRL,
           xmrig HTTP API for XMR (127.0.0.1 only; read over ssh), and
           nvidia-smi for the GPU.
 
@@ -48,6 +53,14 @@ import os
 #   platform  "linux" (default) or "windows" (NSSM services)
 #   kind      "peakminer" (default) or "kryptex" (the Kryptex app rig)
 #   control   "none" makes a host monitor-only (no unit to start/stop)
+#   source    "collector" reads the host's read-only collector FIRST, with
+#             the ssh probe as the fallback (windows-collector contract §5).
+#             Any collector failure — timeout, non-200, oversized, bad JSON,
+#             or a payload that fails validation — falls back to ssh, and
+#             only when both fail does the host read as offline.
+#   collector {"url", "timeout"}: endpoint facts for source=collector
+#   auxPorts  ports the host's probe reads beyond its row miners (data, like
+#             unit names — never derived from anything else)
 FLEET = {
     "zephyr": {
         "ip": "localhost",
@@ -125,6 +138,15 @@ FLEET = {
         "local": False,
         "user": "krash",
         "platform": "windows",
+        # Read-only collector (windows-collector-contract.md §4/§5). krash2 is
+        # virus-quarantined: its payload is HOSTILE input, validated in poll.py
+        # before use and never interpolated into a shell, a path, or a unit
+        # name. Any collector failure falls back to the ssh probe below.
+        "source": "collector",
+        "collector": {"url": "http://10.1.1.79:9700/status.json", "timeout": 2.5},
+        # Monitor-only: the collector is report-only by contract and this box's
+        # NSSM unit is a host-side fact the panel must not offer a control for.
+        "control": "none",
         "miners": [
             {
                 "port": 4069,
@@ -144,6 +166,14 @@ FLEET = {
         # systemd/NSSM unit, so the panel hides this row's pause/resume.
         "control": "none",
         "kind": "kryptex",
+        # Read-only collector first (same rules as krash2), ssh read as the
+        # fallback.
+        "source": "collector",
+        "collector": {"url": "http://10.1.1.150:9700/status.json", "timeout": 2.5},
+        # The bundled CPU xmrig's API port: the probe reads it over ssh today,
+        # and the collector carries it verbatim as miners."12000". Declared so
+        # a collector payload's ports are checked against a known set.
+        "auxPorts": [12000],
         "miners": [
             {
                 # The bundled SRBMiner's API port on the host (the PRL miner).

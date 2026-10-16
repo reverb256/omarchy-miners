@@ -1,0 +1,72 @@
+{
+  "collector": {
+    "version": "1.0.0",
+    "host": "krash2",
+    "platform": "windows",
+    "readonly": true,
+    "ts": "2026-10-16T08:56:01-05:00",
+    "ts_unix": 1792158961.9
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 4060",
+      "temp_c": 71,
+      "fan_pct": 79,
+      "power_w": 117.87,
+      "power_limit_w": 118.0,
+      "util_pct": 99,
+      "clocks_sm_mhz": 2640,
+      "vram_used_mb": 1383,
+      "vram_total_mb": 8188
+    }
+  ],
+  "miners": {
+    "4069": {
+      "version": "2.19.1",
+      "algo": "pearl",
+      "uptime": 49899,
+      "pool": {
+        "url": "40.160.29.14:7048",
+        "ping_ms": 55,
+        "difficulty": 9007199254740992.0,
+        "connected": true
+      },
+      "dev_fee_percent": 2.0,
+      "hashrate": 62590092676205.48,
+      "power_w": 116,
+      "hashrate_per_watt": 539569764450.04724,
+      "accepted_shares": 296,
+      "invalid_shares": 0,
+      "efficiency_pct": 100.0,
+      "last_share_at": 1792158471,
+      "eta_share_secs": 143.90774753022868,
+      "effort_pct": 22.090911865234375,
+      "gpus": [
+        {
+          "id": 0,
+          "name": "RTX 4060",
+          "pci_bus_id": "01:00.0",
+          "utilization_pct": 99,
+          "hashrate": 62590092676205.48,
+          "hashrate_per_watt": 539569764450.04724,
+          "accepted_shares": 296,
+          "invalid_shares": 0,
+          "temperature_c": 71,
+          "fan_pct": 79,
+          "power_w": 116,
+          "mem_clock_mhz": 8251,
+          "core_clock_mhz": 2595,
+          "status": null
+        }
+      ]
+    }
+  },
+  "session": {
+    "active": false,
+    "user": null,
+    "idle_seconds": null,
+    "state": "Disc"
+  },
+  "errors": []
+}

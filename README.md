@@ -80,8 +80,26 @@ Miners by host (unchanged):
 | zephyr | Omarchy | k3s `peakminer-zephyr-3060ti`, `peakminer-zephyr-3090` (rollback units: peakminer-3060ti.service, peakminer-3090.service) |
 | nexus | Omarchy | k3s `peakminer-nexus-3060ti` (rollback unit: peakminer-nexus-3060ti.service) |
 | forge | Omarchy | k3s `peakminer-forge-4060-0/1` (rollback units: peakminer-forge-4060-0/1.service) |
-| krash2 | Windows 11 | pearlhash (NSSM service) |
-| krash3 | Windows 11 | Kryptex desktop app — **monitor-only** (no unit) |
+| krash2 | Windows 11 | pearlhash (NSSM service) — **monitor-only** (read-only collector; control affirms are refused) |
+| krash3 | Windows 11 | Kryptex desktop app — **monitor-only** (read-only collector; no unit) |
+
+### Windows read-only collector
+
+Both Windows hosts run a read-only collector
+(`http://<ip>:9700/status.json`; contract: `windows-collector-contract.md`).
+A host profile with `source: "collector"` (`fleet.py`) is read over that
+endpoint FIRST — 2.5 s timeout, 256 KB cap — and the payload is validated
+strictly before any use (krash2 is virus-quarantined: its payload is hostile
+input): host + `readonly: true` required, JSON types checked, numbers clamped
+to physical ranges, strings truncated/stripped, only the declared ports
+accepted. `miners.<port>` then feeds the same parsing code the ssh read uses.
+
+**Fallback order: collector → ssh read → host offline.** Any collector failure
+(timeout, non-200, redirect, oversized body, bad JSON, failed validation) is a
+failed probe, never data. Payload data never reaches a shell, a file path, or
+a unit name. Both Windows rows are monitor-only: the panel draws no control
+for them, and `miner-control` refuses every control verb there while still
+answering read-only `status`.
 
 ### Earnings estimate
 
@@ -112,12 +130,22 @@ figures stay per-coin; the price caption lists both pool rates.
   read — nvidia-smi queries, amdgpu sysfs reads, `curl` GETs against the
   host's own loopback, `kubectl get`, and bounded `find` listings. `gpu.py`
   and `poll.py` contain no control verb at all (gate G28 enforces this).
+- **Windows collector payloads are treated as hostile** (krash2 is
+  virus-quarantined): `poll.py` validates every collector body against the
+  contract before use (host + `readonly: true`, JSON types, numeric clamps,
+  64-char string truncation with control characters stripped, only declared
+  ports, 256 KB cap), and a body that fails any rule is a **failed probe** —
+  never data. Nothing from a payload is ever interpolated into a shell, a file
+  path, or a unit name. Gate G32 locks this with oversized / wrong-type /
+  bad-host / `readonly: false` bodies served over a real HTTP endpoint.
 - **Service management — miners only, unchanged**: the plugin manages miners
   through `miner-control` (start/stop/restart/status). The five Linux miners
   are k3s Deployments (namespace `mining`) — control routes through kubectl
   (runtime only; config = git + ArgoCD, repo `reverb256/mining-k8s`).
   Non-migrated units fall back to systemd/NSSM. Targets are validated
-  against the fleet definition before any control call. If the kubeconfig's
+  against the fleet definition before any control call, and monitor-only
+  hosts (`control: "none"` — both Windows rigs) refuse every control verb;
+  only the read-only `status` answers there. If the kubeconfig's
   pinned apiserver is unreachable, `miner-control` probes the other cluster
   endpoints (10.1.1.100 VIP → sentry → forge → nexus) and retries the
   action once against the first that answers. A status read against an
@@ -154,8 +182,12 @@ figures stay per-coin; the price caption lists both pool rates.
   rules (heat/VRAM; unreliable sensors excluded), the miner⇄GPU pairing, and
   the shared row-facts resolution the rows and the ordering both use
 - **`fleet.py`** — Fleet definition (one source of truth): miners (`FLEET`)
-  and the GPU view (`GPU_FLEET`), plus the shared ssh mux options
-- **`poll.py`** — Polls all miners and embeds the GPU view; emits one JSON
+  — hosts, connection facts, exact unit names, the collector endpoints
+  (`source`/`collector`) and declared auxiliary ports (`auxPorts`) — and the
+  GPU view (`GPU_FLEET`), plus the shared ssh mux options
+- **`poll.py`** — Polls all miners (read-only collector first where declared,
+  with strict §5 payload validation, then the ssh read) and embeds the GPU
+  view; emits one JSON; one record builder serves both transports
 - **`gpu.py`** — Read-only GPU/workload/k8s/model probes: one ssh session
   per host per refresh (loopback curls run ON the host), ~20 s cache for the
   live sections and ~300 s for the model-file scan
@@ -165,8 +197,10 @@ figures stay per-coin; the price caption lists both pool rates.
   systemd / NSSM)
 - **`components/`** — `SummaryStrip`, `CollapseLine`, `WorkloadRow`,
   `ModelRow`, `SectionLabel`, plus the existing `ErrorBanner` / `StatPill`
-- **`run-gates.sh`** — Plugin gates (G1–G29; G29 locks the single-pane,
-  no-scroll layout)
+- **`run-gates.sh`** — Plugin gates (G1–G32; G29 locks the single-pane,
+  no-scroll layout; G30–G32 lock the read-only Windows collector — monitor-only
+  rows, fixture equivalence between the collector and ssh transports, and
+  hostile-payload rejection)
 
 ### Polling budget
 

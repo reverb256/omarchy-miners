@@ -33,6 +33,29 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G27 | Keyboard confirm | `grep -c 'cursorConfirmIndex' Panel.qml` — Enter also two-steps a stop | count ≥ 1 |
 | G28 | Dashboard read-only | `poll.py`/`gpu.py` contain no `miner-control` invocation and no kubectl mutation verb | `ok` |
 | G29 | Single pane, no scroll | `Panel.qml`/`MinerRow.qml`/`components/*.qml` contain no `Flickable`/`ScrollBar`/`ScrollView`/`contentY`, and the panel draws one `MinerRow` per entry of the merged `root.rows` list | `ok` |
+| G30 | Windows rows monitor-only | for every `FLEET` host with `platform == "windows"`, `control == "none"` — the collector contract's hard gate | `ok (N windows hosts, all control=none)` |
+| G31 | Collector fixture equivalence | `fixtures/krash2-status.json` + `fixtures/krash3-status.json` (saved status.json records) run through §5 validation + the shared record builder; rows must equal the ssh-shaped inputs for the same miners, session extras asserted, undeclared port dropped | `ok (both hosts: identical rows on both transports)` |
+| G32 | Hostile payloads rejected | oversized / wrong-type / bad-host / readonly:false bodies served over a real HTTP endpoint; each must be a failed probe that falls back to the ssh read — no exception, no payload data in the result. A valid payload positive control proves the gate cannot pass by rejecting everything | `ok (4 hostile bodies rejected → probe failed → ssh fallback)` |
+
+## Windows read-only collector (contract §5)
+
+krash2 (virus-quarantined) and krash3 run a read-only collector at
+`http://<ip>:9700/status.json` (see `windows-collector-contract.md`). When a
+host profile declares `source: "collector"`, `poll.py` reads it FIRST — 2.5 s
+timeout, 256 KB body cap, no redirect followed — then validates the payload
+strictly before any use: `collector.host` must be this host,
+`collector.readonly` must be `true`, JSON types are checked, numbers are
+clamped to physical ranges (null stays null), strings are truncated to 64
+chars with control characters stripped, and `miners` is limited to the ports
+the profile declares (`miners` ports + `auxPorts`). `miners.<port>` then feeds
+the **same** parsing code the ssh path uses — one record builder, two
+transports.
+
+Fallback order: collector → ssh read → host offline. **Any** collector failure
+(timeout, non-200, redirect, oversized, bad JSON, failed validation) is a
+failed probe, never data. Nothing from a payload reaches a shell, a file path,
+or a unit name. `miner-control status` stays available on monitor-only hosts
+(it is a read); every control verb is refused there.
 
 CONTROL-PATH FAILOVER (2026-09-24): the kubeconfig pins ONE apiserver, so the
 nexus-k3s outage made every panel start/stop fail while the cluster stayed

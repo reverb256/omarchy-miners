@@ -1,0 +1,36 @@
+{
+  "collector": {
+    "version": "1.0.0",
+    "host": "krash3",
+    "platform": "windows",
+    "readonly": true,
+    "ts": "2026-10-16T08:56:01-05:00",
+    "ts_unix": 1792158961.9
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 4060",
+      "temp_c": 71,
+      "fan_pct": 79,
+      "power_w": 117.87,
+      "power_limit_w": 118.0,
+      "util_pct": 99,
+      "clocks_sm_mhz": 2640,
+      "vram_used_mb": 1383,
+      "vram_total_mb": 8188
+    }
+  ],
+  "miners": {
+    "4069": {
+      "payload": "HOSTILE_MARKER bad-host"
+    }
+  },
+  "session": {
+    "active": false,
+    "user": null,
+    "idle_seconds": null,
+    "state": "Disc"
+  },
+  "errors": []
+}

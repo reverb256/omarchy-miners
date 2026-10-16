@@ -181,10 +181,12 @@ def build_command(host, unit, action, miner):
     if k8s:
         return build_k8s_command(k8s, action), "k8s"
 
-    # The Kryptex app rig is monitor-only: there is no unit behind the name,
-    # so never let a stray panel binding reach a control command.
-    if config.get("control") == "none":
-        fail(f"{host} is monitor-only (Kryptex app) — nothing to control")
+    # Monitor-only hosts (the Kryptex app rig, and krash2 now that it is
+    # report-only): no control verb may reach the host — a stray panel binding
+    # must fail here. `status` is a READ, the same fact the fallback read path
+    # uses, so it stays available.
+    if config.get("control") == "none" and action != "status":
+        fail(f"{host} is monitor-only — {action} is refused; only status can be read")
 
     is_windows = config.get("platform") == "windows"
 

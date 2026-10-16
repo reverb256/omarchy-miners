@@ -191,3 +191,190 @@ if 'model: root.rows' not in panel or 'MinerRow {' not in panel:
     bad.append('panel:not-one-row-per-miner')
 print('ok' if not bad else 'FAIL:' + ','.join(bad))
 PY
+
+# --- Windows read-only collector gates (contract §5) ------------------------
+
+# G30: the contract's hard gate — every host with platform == "windows" MUST be
+# monitor-only. The collector is report-only by contract; a control affordance
+# on a Windows row would offer a verb neither transport can honour.
+printf 'G30 windows monitor-only  : '
+python3 - <<'PY'
+import sys
+sys.path.insert(0, '.')
+from fleet import FLEET
+windows = [h for h, c in FLEET.items() if c.get("platform") == "windows"]
+bad = [h for h in windows if FLEET[h].get("control") != "none"]
+print(f"ok ({len(windows)} windows hosts, all control=none)" if windows and not bad
+      else "FAIL:" + (",".join(bad) if bad else "no windows hosts found"))
+PY
+
+# G31: a SAVED status.json fixture parses to the same row values as the ssh
+# path for the same miners — one record builder, two transports, no fork. The
+# saved fixtures carry the verbatim API payloads captured from krash2/krash3.
+printf 'G31 collector fixture     : '
+python3 - <<'PY'
+import json, sys
+sys.path.insert(0, '.')
+import poll
+from fleet import FLEET
+
+def rows(host, config, summaries):
+    out = []
+    for i, entry in enumerate(config["miners"]):
+        row = poll.miner_record(host, config, entry, i, summaries.get(entry["port"]),
+                                True, False, [], session_text="")
+        row.pop("sessionText", None)  # collector-only fact, not from the miners
+        out.append(row)
+    return out
+
+failures = []
+
+# krash2 (peakminer): the ssh read of miners.<port> IS the fixture's verbatim
+# payload, so both transports must produce identical rows.
+cfg = FLEET["krash2"]
+fixture = json.load(open("fixtures/krash2-status.json"))
+validated = poll.validate_collector_payload("krash2", cfg, fixture)
+if validated is None:
+    failures.append("krash2 fixture rejected by §5 validation")
+else:
+    collected, extras = poll.collector_summaries(cfg, validated)
+    ssh_shaped = {m["port"]: fixture["miners"][str(m["port"])] for m in cfg["miners"]}
+    if rows("krash2", cfg, collected) != rows("krash2", cfg, ssh_shaped):
+        failures.append("krash2 rows differ between collector and ssh inputs")
+    if extras["sessionText"] != "none":
+        failures.append(f"krash2 sessionText={extras['sessionText']!r}")
+    if extras["gpuPower"] != [117.87]:
+        failures.append(f"krash2 gpuPower={extras['gpuPower']!r}")
+
+# krash3 (Kryptex rig): the collector path must land on the same
+# kryptex_summary() the ssh path uses, with the aux xmrig port (12000) kept.
+cfg3 = FLEET["krash3"]
+fixture3 = json.load(open("fixtures/krash3-status.json"))
+validated3 = poll.validate_collector_payload("krash3", cfg3, fixture3)
+if validated3 is None:
+    failures.append("krash3 fixture rejected by §5 validation")
+else:
+    collected3, extras3 = poll.collector_summaries(cfg3, validated3)
+    gpu0 = fixture3["gpus"][0]
+    ssh_shaped3 = poll.kryptex_summary(
+        cfg3["miners"][0]["port"],
+        fixture3["miners"]["12008"], fixture3["miners"]["12000"],
+        gpu0["power_w"], gpu0["util_pct"],
+    )
+    if rows("krash3", cfg3, collected3) != rows("krash3", cfg3, ssh_shaped3):
+        failures.append("krash3 rows differ between collector and ssh inputs")
+    if extras3["sessionText"] != "in use":
+        failures.append(f"krash3 sessionText={extras3['sessionText']!r}")
+    # Only DECLARED ports survive: a payload carrying a foreign port must not
+    # extend the row set beyond the profile's declared ports.
+    polluted = json.loads(json.dumps(fixture3))
+    polluted["miners"]["1337"] = {"junk": True}
+    filtered = poll.validate_collector_payload("krash3", cfg3, polluted)
+    if filtered is None or 1337 in filtered["miners"]:
+        failures.append("undeclared port 1337 survived validation")
+    # The gaming-throttle signal: a 1-minute window collapsed to a quarter of
+    # the sustained 1-hour rate must flag the row throttled (and clear again
+    # when the windows agree).
+    throttled_payload = json.loads(json.dumps(fixture3))
+    arm = throttled_payload["miners"]["12008"]["algorithms"][0]["hashrate"]
+    arm["1min"] = arm["1hr"] * 0.25
+    tap = poll.validate_collector_payload("krash3", cfg3, throttled_payload)
+    tsum, _ = poll.collector_summaries(cfg3, tap)
+    if not tsum[12008]["throttled"]:
+        failures.append("a 1min/1hr collapse did not flag throttled")
+    if tsum[12008]["srbWindows"].get("1hr") != fixture3["miners"]["12008"]["algorithms"][0]["hashrate"]["1hr"]:
+        failures.append("the throttle windows were reshaped")
+
+print("ok (both hosts: identical rows on both transports)" if not failures
+      else "FAIL:" + "; ".join(failures))
+PY
+
+# G32: krash2 is quarantined — its payload is HOSTILE input. Served over a real
+# HTTP endpoint: an oversized body, a wrong-typed body, a wrong-host body and a
+# readonly:false body must each be a FAILED PROBE that falls back to the ssh
+# read (monkeypatched to a sentinel), must never raise, and must leak no
+# payload data into the result or the extras.
+printf 'G32 hostile payloads      : '
+python3 - <<'PY'
+import http.server, json, sys, threading
+sys.path.insert(0, '.')
+import poll
+from fleet import FLEET
+
+class FixtureServer(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = self.server.body
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureServer)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{server.server_port}/status.json"
+
+def config_for(url):
+    cfg = dict(FLEET["krash2"])
+    cfg["collector"] = {"url": url, "timeout": 2.0}
+    return cfg
+
+krash2 = json.load(open("fixtures/krash2-status.json"))
+oversized = json.loads(json.dumps(krash2))
+oversized["gpus"][0]["name"] = "pad " + "x" * (300 * 1024)  # valid JSON, > 256 KB
+
+cases = [
+    ("oversized", json.dumps(oversized).encode()),
+    ("wrong-type", open("fixtures/hostile-wrong-type.json", "rb").read()),
+    ("bad-host", open("fixtures/hostile-bad-host.json", "rb").read()),
+    ("readonly-false", open("fixtures/hostile-readonly-false.json", "rb").read()),
+]
+failures = []
+
+# POSITIVE CONTROL first: a valid payload must be used — the ssh read must NOT
+# run (it raises if it does). A gate that rejects everything cannot pass.
+def forbidden(_):
+    raise AssertionError("ssh read ran although the collector answered")
+
+server.body = open("fixtures/krash2-status.json", "rb").read()
+sentinel = poll.query_host_over_ssh
+poll.query_host_over_ssh = forbidden
+try:
+    extras = {}
+    result = poll.probe_host("krash2", config_for(base), extras)
+finally:
+    poll.query_host_over_ssh = sentinel
+if result != {4069: krash2["miners"]["4069"]}:
+    failures.append("valid payload did not reach the rows")
+
+# Then the hostile bodies: each must degrade to the ssh fallback.
+def ssh_fallback(_):
+    return {4069: {"sentinel": "ssh-path"}}
+
+poll.query_host_over_ssh = ssh_fallback
+try:
+    for label, body in cases:
+        server.body = body
+        extras = {}
+        try:
+            result = poll.probe_host("krash2", config_for(base), extras)
+        except Exception as error:  # noqa: BLE001 - raising IS the failure
+            failures.append(f"{label}: raised {error!r}")
+            continue
+        if result != {4069: {"sentinel": "ssh-path"}}:
+            failures.append(f"{label}: no ssh fallback ({result!r})")
+        if "HOSTILE_MARKER" in json.dumps(result) or extras:
+            failures.append(f"{label}: payload data leaked ({result!r} {extras!r})")
+        if poll.query_collector("krash2", config_for(base)) is not None:
+            failures.append(f"{label}: not reported as a failed probe")
+finally:
+    poll.query_host_over_ssh = sentinel
+    server.shutdown()
+
+print("ok (4 hostile bodies rejected → probe failed → ssh fallback)" if not failures
+      else "FAIL:" + "; ".join(failures))
+PY

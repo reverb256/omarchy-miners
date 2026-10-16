@@ -1,0 +1,357 @@
+{
+  "collector": {
+    "version": "1.0.0",
+    "host": "krash3",
+    "platform": "windows",
+    "readonly": true,
+    "ts": "2026-10-16T08:56:01-05:00",
+    "ts_unix": 1792158961.9
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 4060",
+      "temp_c": 62,
+      "fan_pct": 87,
+      "power_w": 118.21,
+      "power_limit_w": 118.0,
+      "util_pct": 100,
+      "clocks_sm_mhz": 2730,
+      "vram_used_mb": 1482,
+      "vram_total_mb": 8188
+    }
+  ],
+  "miners": {
+    "12008": {
+      "rig_name": "SRBMiner-Multi-Rig",
+      "miner_version": "3.7.6",
+      "mining_time": 10100,
+      "total_cpu_workers": 0,
+      "total_gpu_workers": 1,
+      "total_workers": 1,
+      "cpu_devices": [
+        {
+          "id": 0,
+          "device": "cpu0",
+          "model": "AMD Ryzen 9 5900X 12-Core Processor",
+          "L3": 67108864,
+          "L2": 6291456,
+          "L1": 393216,
+          "package_power": 0.0
+        }
+      ],
+      "gpu_devices": [
+        {
+          "id": 0,
+          "topology_id": "0000:08:00.0",
+          "bus_id": 8,
+          "device": "gpu0",
+          "vendor": "nvidia",
+          "model": "nvidia_geforce_rtx_4060",
+          "fan_speed_percent": 87,
+          "core_clock": 2715,
+          "memory_clock": 8826,
+          "temperature": 62,
+          "asic_power": 0,
+          "off_temperature": 100
+        }
+      ],
+      "algorithms": [
+        {
+          "id": 0,
+          "name": "pearlhash",
+          "pool": {
+            "pool": "prl-us.kryptex.network:7048",
+            "wallet": "krxxvnvmm7/v259573e58",
+            "time_connected": "2026-10-16 06:00:02",
+            "uptime": 10100,
+            "difficulty": 2097152.0,
+            "last_job_received": 33,
+            "latency": 81
+          },
+          "shares": {
+            "total": 79,
+            "accepted": 78,
+            "rejected": 1,
+            "avg_find_time": 127
+          },
+          "hashrate": {
+            "1min": 64624117496363.92,
+            "15min": 64675734038536.27,
+            "1hr": 64595404939426.88,
+            "6hr": 64276146701655.8,
+            "cpu": {
+              "total": 0.0
+            },
+            "gpu": {
+              "gpu0": 64837340946809.77,
+              "total": 64837340946809.77
+            }
+          },
+          "gpu_accepted_shares": {
+            "gpu0": 78
+          },
+          "gpu_rejected_shares": {
+            "gpu0": 1
+          },
+          "gpu_compute_errors": {
+            "gpu0": 0
+          },
+          "gpu_efficiency": {
+            "gpu0": 0.0
+          },
+          "gpu_autotune_results": {
+            "gpu0": "0"
+          }
+        }
+      ]
+    },
+    "12000": {
+      "id": "80eabd253b218a8c",
+      "worker_id": "krash3",
+      "uptime": 10105,
+      "restricted": true,
+      "resources": {
+        "memory": {
+          "free": 11052466176,
+          "total": 34262908928,
+          "resident_set_memory": 16228352
+        },
+        "load_average": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hardware_concurrency": 24
+      },
+      "features": [
+        "api",
+        "asm",
+        "http",
+        "hwloc",
+        "tls",
+        "opencl",
+        "cuda"
+      ],
+      "results": {
+        "diff_current": 2267670,
+        "shares_good": 54,
+        "shares_total": 54,
+        "avg_time": 187,
+        "avg_time_ms": 187144,
+        "hashes_total": 114672260,
+        "best": [
+          114258407,
+          111719457,
+          82220508,
+          16844052,
+          14563494,
+          12467048,
+          11592893,
+          10758245,
+          10675583,
+          10469195
+        ],
+        "error_log": []
+      },
+      "algo": "rx/0",
+      "connection": {
+        "pool": "xmr-us.kryptex.network:7029",
+        "ip": "40.160.29.14",
+        "uptime": 10105,
+        "uptime_ms": 10105781,
+        "ping": 83,
+        "failures": 0,
+        "tls": null,
+        "tls-fingerprint": null,
+        "algo": "rx/0",
+        "diff": 2267670,
+        "accepted": 54,
+        "rejected": 0,
+        "avg_time": 187,
+        "avg_time_ms": 187144,
+        "hashes_total": 114672260,
+        "error_log": []
+      },
+      "version": "6.26.0",
+      "kind": "miner",
+      "ua": "XMRig/6.26.0 (Windows NT 10.0; Win64; x64) libuv/1.51.0 msvc/2022",
+      "cpu": {
+        "brand": "AMD Ryzen 9 5900X 12-Core Processor",
+        "family": 25,
+        "model": 33,
+        "stepping": 0,
+        "proc_info": 10620688,
+        "aes": true,
+        "avx2": true,
+        "x64": true,
+        "64_bit": true,
+        "l2": 6291456,
+        "l3": 67108864,
+        "cores": 12,
+        "threads": 24,
+        "packages": 1,
+        "nodes": 1,
+        "backend": "hwloc/2.12.1",
+        "msr": "ryzen_19h",
+        "assembly": "ryzen",
+        "arch": "x86_64",
+        "flags": [
+          "aes",
+          "vaes",
+          "avx",
+          "avx2",
+          "bmi2",
+          "osxsave",
+          "pdpe1gb",
+          "sse2",
+          "ssse3",
+          "sse4.1",
+          "popcnt",
+          "vm"
+        ]
+      },
+      "donate_level": 1,
+      "paused": false,
+      "algorithms": [
+        "cn/1",
+        "cn/2",
+        "cn/r",
+        "cn/fast",
+        "cn/half",
+        "cn/xao",
+        "cn/rto",
+        "cn/rwz",
+        "cn/zls",
+        "cn/double",
+        "cn/ccx",
+        "cn-lite/1",
+        "cn-heavy/0",
+        "cn-heavy/tube",
+        "cn-heavy/xhv",
+        "cn-pico",
+        "cn-pico/tlo",
+        "cn/upx2",
+        "rx/0",
+        "rx/2",
+        "rx/wow",
+        "rx/arq",
+        "rx/graft",
+        "rx/sfx",
+        "rx/yada",
+        "argon2/chukwa",
+        "argon2/chukwav2",
+        "argon2/ninja",
+        "ghostrider"
+      ],
+      "hashrate": {
+        "total": [
+          10182.15,
+          10166.74,
+          10154.24
+        ],
+        "highest": 10334.13,
+        "threads": [
+          [
+            495.29,
+            496.51,
+            502.09
+          ],
+          [
+            564.87,
+            563.92,
+            562.42
+          ],
+          [
+            544.71,
+            541.62,
+            539.53
+          ],
+          [
+            557.01,
+            556.72,
+            555.56
+          ],
+          [
+            544.6,
+            543.25,
+            542.72
+          ],
+          [
+            567.97,
+            567.18,
+            566.68
+          ],
+          [
+            562.39,
+            561.33,
+            560.71
+          ],
+          [
+            560.83,
+            559.92,
+            559.76
+          ],
+          [
+            565.9,
+            565.72,
+            565.29
+          ],
+          [
+            643.64,
+            640.38,
+            636.64
+          ],
+          [
+            584.51,
+            585.21,
+            584.68
+          ],
+          [
+            622.45,
+            620.29,
+            617.94
+          ],
+          [
+            564.76,
+            564.48,
+            563.64
+          ],
+          [
+            566.62,
+            565.77,
+            565.15
+          ],
+          [
+            543.36,
+            543.39,
+            541.99
+          ],
+          [
+            565.69,
+            564.66,
+            564.04
+          ],
+          [
+            566.31,
+            565.57,
+            565.19
+          ],
+          [
+            561.14,
+            560.73,
+            560.12
+          ]
+        ]
+      },
+      "hugepages": true
+    }
+  },
+  "session": {
+    "active": true,
+    "user": "krash",
+    "idle_seconds": null,
+    "state": "Active"
+  },
+  "errors": []
+}

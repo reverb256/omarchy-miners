@@ -359,6 +359,10 @@ Item {
           if (root.power > 0) parts.push(Format.formatPower(root.power))
           if (root.shareText !== "") parts.push(root.shareText)
           if (root.extraText !== "") parts.push(root.extraText)
+          // The collector's SRB window ratio: the miner is running at less
+          // than half its own sustained rate (the gaming-rig signal). The
+          // word is the marker; the tooltip carries the numbers.
+          if (root.miner && root.miner.throttled === true) parts.push("throttled")
           var pressure = Model.baselineText(root.shortName)
           if (pressure !== "" && root.lowHashrate) parts.push("expected " + pressure)
           return parts.join("  ·  ")
@@ -390,6 +394,16 @@ Item {
       lines.push(root.online
         ? root.miner.hashrateText + " · " + Format.formatPower(root.power) + " · " + root.temp.toFixed(0) + "°C"
         : root.stateLabel + (root.paused ? " (deployment scaled to 0)" : ""))
+      // Collector facts, when the Windows host's payload carries them: who is
+      // on the box, and the SRB window ratio that flags a throttled miner.
+      if (String(root.miner.sessionText || "") !== "")
+        lines.push("user session: " + String(root.miner.sessionText))
+      if (root.miner.throttled === true) {
+        var windows = root.miner.srbWindows || ({})
+        var sustained = Number(windows["1hr"] || windows["6hr"] || 0)
+        lines.push("throttled: 1min " + Format.formatHashrate(Number(windows["1min"] || 0))
+          + " vs " + Format.formatHashrate(sustained) + " sustained")
+      }
       if (root.gpu) {
         var vram = root.gpu.vramTotal > 0
           ? Format.formatMiB(root.gpu.vramUsed || 0) + " / " + Format.formatMiB(root.gpu.vramTotal)

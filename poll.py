@@ -26,6 +26,15 @@ Deriving a unit from the API port (the previous behaviour) matched no unit on
 any host, so every pause silently did nothing. Keep these strings in step with
 the hosts themselves, and never guess them from a port.
 
+The two Windows hosts also run a READ-ONLY collector
+(windows-collector-contract.md). When a host profile declares
+`source: "collector"`, this poller reads the collector's status.json FIRST and
+falls back to its ssh read on ANY failure — timeout, non-200, oversized body,
+bad JSON, or a payload that fails the §5 validation below. krash2 is
+virus-quarantined, so a collector payload is HOSTILE input: nothing from it
+reaches a shell, a file path, or a unit name, and a payload that fails
+validation is a FAILED PROBE, never data.
+
 Some peakminer builds (e.g. v2.9.1 on forge) report power_w: null from their
 API. When the miner API has no power, fall back to nvidia-smi -q -d POWER —
 instantaneous draw is often N/A on headless mining hosts but the Power
@@ -191,6 +200,322 @@ def _ssh_ok(config):
     return completed.returncode == 0
 
 
+# ---------------------------------------------------------------------------
+# Read-only Windows collector (windows-collector-contract.md §4/§5).
+#
+# krash2 is virus-quarantined: everything it emits is UNTRUSTED input. Every
+# rule below exists because of that, and none of it may be relaxed:
+#   * the body is capped at 256 KB and the response must be 200, no redirect
+#   * collector.host must be THIS host and collector.readonly must be true
+#   * JSON types are checked (a string where a number belongs rejects the body)
+#   * numbers are clamped to physical ranges, null stays null
+#   * strings are truncated to 64 chars with control characters stripped
+#   * miners is limited to the ports the host profile declares
+# A body that fails any rule is a FAILED PROBE — the caller falls back to the
+# ssh read. Nothing here ever reaches a shell, a file path, or a unit name.
+# ---------------------------------------------------------------------------
+
+COLLECTOR_MAX_BYTES = 256 * 1024  # response cap (contract §4/§5)
+COLLECTOR_TIMEOUT_SECONDS = 2.5   # per-request budget when the profile has none
+COLLECTOR_MAX_STRING = 64         # string truncation cap (contract §5)
+COLLECTOR_MAX_DEPTH = 12          # nested payloads deeper than this are rejected
+# Physical ranges (contract §5). Values arrive hostile: out-of-range numbers
+# are CLAMPED into the range, wrong types are rejected, null stays null.
+COLLECTOR_NUMBER_RANGES = {
+    "temp_c": (0.0, 120.0),
+    "fan_pct": (0.0, 100.0),
+    "power_w": (0.0, 600.0),
+    "power_limit_w": (0.0, 600.0),
+    "util_pct": (0.0, 100.0),
+    "clocks_sm_mhz": (0.0, 12000.0),
+    "vram_used_mb": (0.0, 10 ** 7),
+    "vram_total_mb": (0.0, 10 ** 7),
+}
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def declared_ports(config):
+    """Every port this host's profile declares: its row miners plus the
+    auxiliary APIs its probe consumes (the kryptex rig's CPU xmrig)."""
+    ports = {miner["port"] for miner in config.get("miners") or []}
+    ports.update(config.get("auxPorts") or [])
+    return ports
+
+
+def _clean_text(value):
+    """One string out of a hostile payload: control chars stripped, capped."""
+    if not isinstance(value, str):
+        return ""
+    return CONTROL_CHARACTERS.sub("", value[: COLLECTOR_MAX_STRING * 4])[:COLLECTOR_MAX_STRING]
+
+
+def _clean_number(value):
+    """JSON null -> None; a finite number -> float; anything else -> ValueError."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("not a number")
+    result = float(value)
+    if result != result or result in (float("inf"), float("-inf")):
+        raise ValueError("not a finite number")
+    return result
+
+
+def _sanitize_collector_tree(value, depth=0):
+    """Strip control characters + truncate every string in a payload tree.
+
+    Structure and numbers ride through untouched — `miners.<port>` stays the
+    miner API's JSON, verbatim, minus the strings a hostile host could weaponise.
+    """
+    if depth > COLLECTOR_MAX_DEPTH:
+        raise ValueError("payload nested too deep")
+    if isinstance(value, str):
+        return _clean_text(value)
+    if isinstance(value, list):
+        return [_sanitize_collector_tree(item, depth + 1) for item in value]
+    if isinstance(value, dict):
+        return {
+            (_clean_text(key) if isinstance(key, str) else str(key)):
+                _sanitize_collector_tree(item, depth + 1)
+            for key, item in value.items()
+        }
+    return value
+
+
+def validate_collector_payload(host, config, payload):
+    """Contract §5 validation. Returns the normalized payload, or None.
+
+    None means an untrusted host's body failed the rules — a failed probe,
+    never data. Unknown top-level keys are dropped; `miners` keeps only the
+    ports this host's profile declares.
+    """
+    if not isinstance(payload, dict):
+        return None
+    collector = payload.get("collector")
+    if not isinstance(collector, dict):
+        return None
+    if _clean_text(collector.get("host")) != host:
+        return None  # a different host's answer is not this host's data
+    if collector.get("readonly") is not True:
+        return None  # a collector claiming write access breaks the contract
+    platform = collector.get("platform")
+    if platform is not None and _clean_text(platform) != str(config.get("platform") or "windows"):
+        return None
+
+    declared = declared_ports(config)
+
+    raw_miners = payload.get("miners")
+    if raw_miners is None:
+        raw_miners = {}
+    elif not isinstance(raw_miners, dict):
+        return None
+    miners = {}
+    for key, summary in raw_miners.items():
+        if not isinstance(key, str) or not key.isdigit() or int(key) not in declared:
+            continue  # only the ports the profile declares
+        if not isinstance(summary, dict):
+            return None
+        miners[int(key)] = _sanitize_collector_tree(summary)
+
+    raw_gpus = payload.get("gpus")
+    if raw_gpus is None:
+        raw_gpus = []
+    elif not isinstance(raw_gpus, list):
+        return None
+    gpus = []
+    for entry in raw_gpus:
+        if not isinstance(entry, dict):
+            return None
+        index = entry.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            return None
+        try:
+            gpu = {"index": index, "name": _clean_text(entry.get("name"))}
+            for key, (low, high) in COLLECTOR_NUMBER_RANGES.items():
+                value = _clean_number(entry.get(key))
+                gpu[key] = None if value is None else min(max(value, low), high)
+        except ValueError:
+            return None
+        gpus.append(gpu)
+
+    raw_session = payload.get("session")
+    session = {"active": False, "user": None, "idle_seconds": None, "state": ""}
+    if raw_session is not None:
+        if not isinstance(raw_session, dict):
+            return None
+        active = raw_session.get("active")
+        idle = raw_session.get("idle_seconds")
+        user = raw_session.get("user")
+        state = raw_session.get("state")
+        if active is not None and not isinstance(active, bool):
+            return None
+        if idle is not None and (isinstance(idle, bool) or not isinstance(idle, (int, float))):
+            return None
+        if user is not None and not isinstance(user, str):
+            return None
+        if state is not None and not isinstance(state, str):
+            return None
+        session = {
+            "active": active is True,
+            "user": _clean_text(user) if user else None,
+            "idle_seconds": None if idle is None else min(max(float(idle), 0.0), 10 ** 9),
+            "state": _clean_text(state),
+        }
+
+    raw_errors = payload.get("errors")
+    errors = []
+    if raw_errors is not None:
+        if not isinstance(raw_errors, list) or any(not isinstance(item, str) for item in raw_errors):
+            return None
+        errors = [_clean_text(item) for item in raw_errors[:16]]
+
+    return {
+        "collector": {
+            "host": host,
+            "readonly": True,
+            "platform": _clean_text(platform),
+            "ts": _clean_text(collector.get("ts")),
+        },
+        "gpus": gpus,
+        "miners": miners,
+        "session": session,
+        "errors": errors,
+    }
+
+
+def fetch_collector_status(url, timeout):
+    """GET one collector status.json under the §4 caps. None on any failure.
+
+    A redirect is refused (a hostile host must not aim this probe at another
+    service), a body over the cap is refused rather than truncated, and a
+    non-200 or unparsable body is refused. Never raises, never partial.
+    """
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if getattr(response, "status", 0) != 200:
+                return None
+            if response.geturl() != url:
+                return None
+            raw = response.read(COLLECTOR_MAX_BYTES + 1)
+    except Exception:
+        return None
+    if len(raw) > COLLECTOR_MAX_BYTES:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def session_text(session):
+    """'in use' / 'idle 42m' / 'none' — the Windows rows' session fact (§5)."""
+    if not isinstance(session, dict):
+        return ""
+    if session.get("active") is True:
+        return "in use"
+    idle = number(session.get("idle_seconds"), None)
+    if idle is not None and idle > 0:
+        if idle < 90:
+            return f"idle {round(idle)}s"
+        if idle < 5400:
+            return f"idle {round(idle / 60)}m"
+        return f"idle {round(idle / 3600)}h"
+    state = str(session.get("state") or "").lower()
+    if state.startswith("disc"):
+        return "none"
+    return ""
+
+
+def collector_summaries(config, payload):
+    """Summaries + extras from a VALIDATED collector payload.
+
+    Handed to the SAME builders the ssh path uses — no parser fork: a
+    peakminer host's verbatim `miners.<port>` JSON *is* what its ssh read
+    returns, and the Kryptex rig goes through kryptex_summary(). `extras`
+    carries the collector-only facts the rows may show (the nvidia-smi power
+    fallback list, the user-session text).
+    """
+    miners = payload["miners"]
+    if config.get("kind") == "kryptex":
+        port = config["miners"][0]["port"]
+        aux = next(iter(config.get("auxPorts") or []), None)
+        gpu0 = payload["gpus"][0] if payload["gpus"] else {}
+        summaries = kryptex_summary(
+            port,
+            miners.get(port),
+            miners.get(aux) if aux else None,
+            number(gpu0.get("power_w"), None),
+            gpu0.get("util_pct"),
+        )
+    else:
+        summaries = {
+            miner["port"]: miners[miner["port"]]
+            for miner in config["miners"]
+            if miner["port"] in miners
+        }
+
+    power_by_index = {}
+    for gpu in payload["gpus"]:
+        power = number(gpu.get("power_w"), None)
+        if power is not None:
+            power_by_index[gpu["index"]] = power
+    gpu_power = [
+        power_by_index.get(index, 0.0)
+        for index in range(max(power_by_index, default=-1) + 1)
+    ]
+    return summaries, {
+        "gpuPower": gpu_power,
+        "sessionText": session_text(payload["session"]),
+    }
+
+
+def query_collector(host, config):
+    """One host's collector read. (summaries, extras) or None (failed probe).
+
+    Every failure mode — timeout, non-200, oversized body, invalid JSON, a
+    payload that fails §5 validation, or a payload shape that trips a parser —
+    is a FAILED PROBE: the caller falls back to the ssh read.
+    """
+    if config.get("source") != "collector":
+        return None
+    collector = config.get("collector") or {}
+    url = collector.get("url")
+    if not url:
+        return None
+    timeout = number(collector.get("timeout"), COLLECTOR_TIMEOUT_SECONDS)
+    try:
+        payload = fetch_collector_status(url, timeout)
+        if payload is None:
+            return None
+        payload = validate_collector_payload(host, config, payload)
+        if payload is None:
+            return None
+        return collector_summaries(config, payload)
+    except Exception:  # noqa: BLE001 - a hostile body must never take the poll down
+        return None
+
+
+def probe_host(name, config, extras_sink=None):
+    """One host's summaries: the collector when configured, else the ssh read.
+
+    Fallback order (contract §5): collector first; on ANY failure the ssh
+    probe; when both fail the host reads as offline. Correctness of the
+    ssh read is unchanged — it is the same code that ran before.
+    """
+    if config.get("source") == "collector":
+        collected = query_collector(name, config)
+        if collected is not None:
+            summaries, extras = collected
+            if extras_sink is not None:
+                extras_sink[name] = extras
+            return summaries
+    if config.get("kind") == "kryptex":
+        return query_kryptex_rig(config)
+    return query_host_over_ssh(config)
+
+
 # The metrics broker. miner-telemetry (a DaemonSet on nexus/forge, plus the
 # nexus -> zephyr remote-pull unit) feeds VictoriaMetrics; reading the broker
 # means no ssh fan-out from every bar for the hosts it covers. j_kro's rule:
@@ -314,44 +639,41 @@ def broker_covered(vm_summaries, deploy_replicas):
     return covered
 
 
-def query_kryptex_rig(config):
-    """Read the Kryptex app rig (krash3) in one pass.
+KRYPTEX_THROTTLE_RATIO = 0.5  # 1min under half its sustained rate = throttled
 
-    Not peakminer, so there is no /summary to read: PRL comes from the bundled
-    SRBMiner's HTTP API (it binds all interfaces, so the LAN reaches it), XMR
-    comes from the bundled xmrig's HTTP API and GPU power from nvidia-smi —
-    both 127.0.0.1-only, so they are gathered over ONE ssh session.
 
-    Returns {port: peakminer-shaped summary}, or {} when unreachable.
+def kryptex_summary(port, srb, xmrig, power, utilization):
+    """The Kryptex row summary from verbatim miner API payloads.
+
+    Shared by the ssh probe and the collector path — one parser, two
+    transports, so a row cannot depend on which one answered. `srb` is
+    SRBMiner's `/` JSON (None when the GPU miner is absent), `xmrig` its
+    `/1/summary` or `/2/summary` JSON (None when the CPU miner is absent).
+
+    Shape guards sit on every sub-object: on the collector path this JSON is
+    hostile input (krash2 is quarantined), so a wrong-shaped field degrades
+    to "no reading" instead of turning into an exception.
     """
-    port = config["miners"][0]["port"]
-
-    try:
-        request = urllib.request.Request(
-            f"http://{config['ip']}:{port}/",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            srb = json.loads(response.read().decode())
-    except Exception:
-        # No SRBMiner listener. If ssh also fails, the host is truly down.
-        if not _ssh_ok(config):
-            return None
-        # SRBMiner is gone but the host reachable: krash3 may now run xmrig
-        # only (the Kryptex app GPU miner was removed). Fall through to gather
-        # xmrig + nvidia-smi data so the row stays informative.
+    if not isinstance(srb, dict):
         srb = None
+    if not isinstance(xmrig, dict):
+        xmrig = None
 
-    # srb is None when the Kryptex GPU miner is absent (krash3 now runs xmrig
-    # only). Fall through with zeroed PRL figures so the xmrig readout still populates.
     algorithm = next(iter((srb or {}).get("algorithms") or []), {})
-    hashrate = algorithm.get("hashrate") or {}
-    prl_hashrate = number(
-        hashrate.get("1min")
-        or hashrate.get("1hr")
-        or (hashrate.get("gpu") or {}).get("total")
-    )
+    if not isinstance(algorithm, dict):
+        algorithm = {}
+    hashrate = algorithm.get("hashrate")
+    if not isinstance(hashrate, dict):
+        hashrate = {}
+    gpu_window = hashrate.get("gpu")
+    gpu_window = gpu_window.get("total") if isinstance(gpu_window, dict) else None
+    # srb is None when the Kryptex GPU miner is absent (krash3 may run xmrig
+    # only). Fall through with zeroed PRL figures so the xmrig readout still
+    # populates.
+    prl_hashrate = number(hashrate.get("1min") or hashrate.get("1hr") or gpu_window)
     gpu_stats = next(iter((srb or {}).get("gpu_devices") or []), {})
+    if not isinstance(gpu_stats, dict):
+        gpu_stats = {}
 
     model = str(gpu_stats.get("model") or "").replace("_", " ")
     name = " ".join(
@@ -361,56 +683,49 @@ def query_kryptex_rig(config):
         for word in model.split()
     ) or "GPU"
 
-    # The local-only reads over one ssh session. XMR_END separates the blocks:
-    # cmd/curl prints multi-line JSON, nvidia-smi follows as plain text.
-    script = "; ".join([
-        'cmd /c "curl.exe -s --max-time 3 http://127.0.0.1:12000/2/summary"',
-        "echo XMR_END",
-        "nvidia-smi -q -d POWER",
-        "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits",
-    ])
-    target = config.get("ssh") or f"{config['user']}@{config['ip']}"
+    # The SRB 1min/1hr/6hr windows: when the 1-minute figure has fallen to
+    # half the sustained rate the miner is being THROTTLED — the gaming-rig
+    # signal (the box's user is on it and the card is shared).
+    windows = {}
+    for key in ("1min", "1hr", "6hr"):
+        value = number(hashrate.get(key), None)
+        if value is not None:
+            windows[key] = value
+    sustained = windows.get("1hr") or windows.get("6hr") or 0.0
+    short = windows.get("1min") or 0.0
+    ratio = short / sustained if (short and sustained) else None
+    throttled = ratio is not None and ratio < KRYPTEX_THROTTLE_RATIO
+
     xmr_hashrate = 0.0
     xmr_shares = 0
     xmr_shares_total = 0
     xmr_algo = ""
     xmr_pool = ""
     xmr_cpu = ""
-    power = 0.0
-    utilization = 100.0 if prl_hashrate > 0 else 0.0
-    try:
-        completed = subprocess.run(
-            ["ssh", *SSH_OPTIONS, target, script],
-            capture_output=True,
-            text=True,
-            timeout=SSH_TIMEOUT_SECONDS,
-            check=False,
-        )
-        xmr_part, _, nvidia_part = (completed.stdout or "").partition("XMR_END")
-        try:
-            xmrig = json.loads(xmr_part.strip())
-            totals = (xmrig.get("hashrate") or {}).get("total") or []
-            if len(totals) >= 2:
-                xmr_hashrate = number(totals[1])  # 60-second average
-            results = xmrig.get("results") or {}
-            xmr_shares = number(results.get("shares_good"))
-            xmr_shares_total = number(results.get("shares_total"))
-            xmr_algo = str(xmrig.get("algo") or "")
-            xmr_pool = str((xmrig.get("connection") or {}).get("pool") or "")
-            cpu_brand = str((xmrig.get("cpu") or {}).get("brand") or "").replace(" Processor", "")
-            # "AMD Ryzen 9 5900X 12-Core Processor" -> "AMD Ryzen 9 5900X"
-            xmr_cpu = " ".join(part for part in cpu_brand.split() if not part.endswith("-Core"))
-        except (json.JSONDecodeError, ValueError):
-            pass
-        powers = parse_nvidia_power(nvidia_part)
-        if powers:
-            power = powers[0]
-        # The utilization CSV prints its bare number on the last line.
-        tail = (nvidia_part or "").strip().splitlines()
-        if tail and tail[-1].strip().isdigit():
-            utilization = number(tail[-1].strip(), utilization)
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    if xmrig:
+        hashrate_block = xmrig.get("hashrate")
+        totals = hashrate_block.get("total") if isinstance(hashrate_block, dict) else None
+        if isinstance(totals, list) and len(totals) >= 2:
+            xmr_hashrate = number(totals[1])  # 60-second average
+        results = xmrig.get("results")
+        if not isinstance(results, dict):
+            results = {}
+        connection = xmrig.get("connection")
+        if not isinstance(connection, dict):
+            connection = {}
+        cpu = xmrig.get("cpu")
+        if not isinstance(cpu, dict):
+            cpu = {}
+        xmr_shares = number(results.get("shares_good"))
+        xmr_shares_total = number(results.get("shares_total"))
+        xmr_algo = str(xmrig.get("algo") or "")
+        xmr_pool = str(connection.get("pool") or "")
+        cpu_brand = str(cpu.get("brand") or "").replace(" Processor", "")
+        # "AMD Ryzen 9 5900X 12-Core Processor" -> "AMD Ryzen 9 5900X"
+        xmr_cpu = " ".join(part for part in cpu_brand.split() if not part.endswith("-Core"))
+
+    if utilization is None:
+        utilization = 100.0 if prl_hashrate > 0 else 0.0
 
     return {
         port: {
@@ -434,8 +749,79 @@ def query_kryptex_rig(config):
             "xmrigAlgo": xmr_algo,
             "xmrigPool": xmr_pool,
             "xmrigCpu": xmr_cpu,
+            # The throttle signal and its windows ride the summary so the
+            # record builder passes them through for both transports.
+            "srbWindows": windows,
+            "throttled": throttled,
+            "throttleRatio": ratio,
         }
     }
+
+
+def query_kryptex_rig(config):
+    """Read the Kryptex app rig (krash3) over the LAN + one ssh session.
+
+    Not peakminer, so there is no /summary to read: PRL comes from the bundled
+    SRBMiner's HTTP API (it binds all interfaces, so the LAN reaches it), XMR
+    comes from the bundled xmrig's HTTP API and GPU power from nvidia-smi —
+    both 127.0.0.1-only, so they are gathered over ONE ssh session.
+
+    Returns {port: peakminer-shaped summary}, or None when unreachable.
+    """
+    port = config["miners"][0]["port"]
+
+    try:
+        request = urllib.request.Request(
+            f"http://{config['ip']}:{port}/",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            srb = json.loads(response.read().decode())
+    except Exception:
+        # No SRBMiner listener. If ssh also fails, the host is truly down.
+        if not _ssh_ok(config):
+            return None
+        # SRBMiner is gone but the host reachable: krash3 may now run xmrig
+        # only (the Kryptex app GPU miner was removed). Fall through to gather
+        # xmrig + nvidia-smi data so the row stays informative.
+        srb = None
+
+    # The local-only reads over one ssh session. XMR_END separates the blocks:
+    # cmd/curl prints multi-line JSON, nvidia-smi follows as plain text.
+    script = "; ".join([
+        'cmd /c "curl.exe -s --max-time 3 http://127.0.0.1:12000/2/summary"',
+        "echo XMR_END",
+        "nvidia-smi -q -d POWER",
+        "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits",
+    ])
+    target = config.get("ssh") or f"{config['user']}@{config['ip']}"
+    xmrig = None
+    power = 0.0
+    utilization = None
+    try:
+        completed = subprocess.run(
+            ["ssh", *SSH_OPTIONS, target, script],
+            capture_output=True,
+            text=True,
+            timeout=SSH_TIMEOUT_SECONDS,
+            check=False,
+        )
+        xmr_part, _, nvidia_part = (completed.stdout or "").partition("XMR_END")
+        try:
+            xmrig = json.loads(xmr_part.strip())
+        except (json.JSONDecodeError, ValueError):
+            xmrig = None
+        powers = parse_nvidia_power(nvidia_part)
+        if powers:
+            power = powers[0]
+        # The utilization CSV prints its bare number on the last line.
+        tail = (nvidia_part or "").strip().splitlines()
+        if tail and tail[-1].strip().isdigit():
+            utilization = number(tail[-1].strip(), None)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return kryptex_summary(port, srb, xmrig, power, utilization)
 
 
 def parse_nvidia_power(output):
@@ -544,6 +930,101 @@ def query_k8s_deploy_replicas():
     return replicas
 
 
+def miner_record(host, config, entry, index, summary, reachable, paused,
+                 host_nvidia, session_text=""):
+    """One display-ready miner row from its summary.
+
+    The record cannot tell which transport produced the summary — that is the
+    point (contract §5): the ssh probes and the collector path hand over the
+    SAME shapes, so this builder is shared, never forked. Shape guards keep a
+    hostile collector payload (krash2 is quarantined) from becoming an
+    exception: anything unusable degrades to a row that says so.
+    """
+    if not isinstance(summary, dict):
+        summary = None
+    gpus = summary.get("gpus") if summary else None
+    if not isinstance(gpus, list):
+        gpus = []
+    online = bool(summary and gpus)
+
+    if paused:
+        state = "paused"
+    elif online:
+        state = "mining"
+    elif reachable:
+        state = "offline"
+    else:
+        state = "unknown"
+
+    # One peakminer instance drives one GPU, so the first entry is the one
+    # this unit owns. Fall back to the summary's own totals when a build
+    # reports per-miner figures only.
+    gpu_entry = gpus[0] if gpus and isinstance(gpus[0], dict) else {}
+
+    gpu_power = number(gpu_entry.get("power_w",
+        summary.get("power_w") if summary else 0))
+
+    # Fallback: miner API reports null power. Use nvidia-smi Power Samples
+    # Avg indexed by GPU id — gathered over ssh, or carried by a §5-validated
+    # collector payload.
+    gpu_id = gpu_entry.get("id", index)
+    if gpu_power == 0 and online and isinstance(gpu_id, int) and gpu_id < len(host_nvidia):
+        gpu_power = host_nvidia[gpu_id]
+
+    k8s = entry.get("k8s") or {}
+    record = {
+        "host": host,
+        "ip": config["ip"],
+        "local": is_local(host, config),
+        "user": config.get("user", ""),
+        "unit": entry["unit"],
+        "port": entry["port"],
+        # Lets a row tell "stopped" apart from "we could not ask".
+        "hostReachable": bool(reachable),
+        # The GPU names itself when it is running; the configured label
+        # keeps a stopped miner identifiable.
+        "label": gpu_entry.get("name") or entry["label"],
+        "powerLimit": number(entry.get("powerLimit")),
+        "online": online,
+        # paused = user intent (deployment scaled to 0); state folds
+        # both signals for everything that reads the JSON.
+        "paused": paused,
+        # managed = a k3s Deployment owns this miner, so its spec is
+        # the DESIRED state the panel's checkbox shows (checked =
+        # replicas != 0, even while a transient fault is being
+        # healed). Unmanaged rows fall back to live state.
+        "managed": bool(k8s),
+        "state": state,
+        "hashrate": number(gpu_entry.get("hashrate", summary.get("hashrate") if summary else 0)),
+        "power": gpu_power,
+        "temp": number(gpu_entry.get("temperature_c")),
+        "fan": number(gpu_entry.get("fan_pct")),
+        "util": number(gpu_entry.get("utilization_pct")),
+    }
+    # The Kryptex app rig has no unit to control: the panel hides the
+    # pause/resume button when controllable is false.
+    record["controllable"] = config.get("control") != "none"
+    # Share throughput rides the same summary as the hashrate: the
+    # broker covers the k3s/host boxes, the ssh paths (the two Windows
+    # rigs) do not report it — 0 there, and the row says so rather
+    # than inventing a rate.
+    record["shareRatePerHour"] = number((summary or {}).get("share_rate_per_hour"))
+    record["lastShareAgeSec"] = number((summary or {}).get("last_share_age_seconds"))
+    record["xmrigHashrate"] = number((summary or {}).get("xmrigHashrate"))
+    record["xmrigShares"] = number((summary or {}).get("xmrigShares"))
+    record["xmrigSharesTotal"] = number((summary or {}).get("xmrigSharesTotal"))
+    record["xmrigAlgo"] = (summary or {}).get("xmrigAlgo", "")
+    record["xmrigPool"] = (summary or {}).get("xmrigPool", "")
+    record["xmrigCpu"] = (summary or {}).get("xmrigCpu", "")
+    # Collector-only facts, when the host's payload carries them: the user
+    # session (the rows' tooltip) and the SRB window ratio that flags a miner
+    # running throttled below its own sustained rate.
+    record["sessionText"] = session_text
+    record["throttled"] = (summary or {}).get("throttled") is True
+    record["srbWindows"] = (summary or {}).get("srbWindows") or {}
+    return record
+
+
 def poll_fleet():
     hosts = {}
     miners = []
@@ -569,21 +1050,21 @@ def poll_fleet():
     # Remote hosts are probed in parallel: each is one ssh round trip, and doing
     # them in sequence would make the panel's refresh wait for the sum.
     remote_summaries = {}
+    collector_extras = {}
     remote_hosts = [
         name for name, config in FLEET.items()
         if not is_local(name, config) and name not in covered
     ]
     if remote_hosts:
         with ThreadPoolExecutor(max_workers=len(remote_hosts)) as pool:
-            # The Kryptex app rig has no /summary to read: it gets its own probe.
-            futures = {}
-            for name in remote_hosts:
-                probe = (
-                    query_kryptex_rig
-                    if FLEET[name].get("kind") == "kryptex"
-                    else query_host_over_ssh
-                )
-                futures[pool.submit(probe, FLEET[name])] = name
+            # probe_host picks the transport per host: the READ-ONLY collector
+            # first when the profile declares one (falling back to ssh on any
+            # failure), then the ssh read — peakminer's /summary, or the
+            # Kryptex app rig's own probe.
+            futures = {
+                pool.submit(probe_host, name, FLEET[name], collector_extras): name
+                for name in remote_hosts
+            }
             for future in as_completed(futures):
                 name = futures[future]
                 try:
@@ -616,6 +1097,13 @@ def poll_fleet():
                 except Exception:
                     nvidia_power[name] = []
 
+    # A collector payload's nvidia-smi facts (§5-validated) take the same
+    # fallback slot the ssh Power Samples read fills on the Linux hosts.
+    for name, extras in collector_extras.items():
+        gpu_power = extras.get("gpuPower") or []
+        if gpu_power:
+            nvidia_power[name] = gpu_power
+
     for host, config in FLEET.items():
         host_hashrate = 0.0
         host_power = 0.0
@@ -627,6 +1115,7 @@ def poll_fleet():
         # nothing: "miner stopped" and "host down" are different states.
         reachable = is_local(host, config) or probe_result is not None
         host_nvidia = nvidia_power.get(host, [])
+        session_state = (collector_extras.get(host) or {}).get("sessionText", "")
 
         for i, entry in enumerate(config["miners"]):
             configured_count += 1
@@ -637,8 +1126,6 @@ def poll_fleet():
                 summary = query_miner(config["ip"], entry["port"])
             else:
                 summary = host_summaries.get(entry["port"])
-            gpus = (summary or {}).get("gpus") or []
-            online = bool(summary and gpus)
 
             # User-intent state, from the k3s Deployment spec: replicas == 0
             # is a DELIBERATE pause (the panel's Pause control writes that),
@@ -646,83 +1133,22 @@ def poll_fleet():
             # cannot answer.
             k8s = entry.get("k8s") or {}
             paused = bool(k8s) and deploy_replicas.get(k8s.get("deploy", "")) == 0
-            if paused:
-                state = "paused"
-            elif online:
-                state = "mining"
-            elif reachable:
-                state = "offline"
-            else:
-                state = "unknown"
 
-            # One peakminer instance drives one GPU, so the first entry is the
-            # one this unit owns. Fall back to the summary's own totals when a
-            # build reports per-miner figures only.
-            gpu_entry = gpus[0] if gpus else {}
-
-            gpu_power = number(gpu_entry.get("power_w",
-                summary.get("power_w") if summary else 0))
-
-            # Fallback: miner API reports null power. Use nvidia-smi Power
-            # Samples Avg indexed by GPU id.
-            gpu_id = gpu_entry.get("id", i)
-            if gpu_power == 0 and online and isinstance(gpu_id, int) and gpu_id < len(host_nvidia):
-                gpu_power = host_nvidia[gpu_id]
-
-            record = {
-                "host": host,
-                "ip": config["ip"],
-                "local": is_local(host, config),
-                "user": config.get("user", ""),
-                "unit": entry["unit"],
-                "port": entry["port"],
-                # Lets a row tell "stopped" apart from "we could not ask".
-                "hostReachable": bool(reachable),
-                # The GPU names itself when it is running; the configured label
-                # keeps a stopped miner identifiable.
-                "label": gpu_entry.get("name") or entry["label"],
-                "powerLimit": number(entry.get("powerLimit")),
-                "online": online,
-                # paused = user intent (deployment scaled to 0); state folds
-                # both signals for everything that reads the JSON.
-                "paused": paused,
-                # managed = a k3s Deployment owns this miner, so its spec is
-                # the DESIRED state the panel's checkbox shows (checked =
-                # replicas != 0, even while a transient fault is being
-                # healed). Unmanaged rows fall back to live state.
-                "managed": bool(k8s),
-                "state": state,
-                "hashrate": number(gpu_entry.get("hashrate", summary.get("hashrate") if summary else 0)),
-                "power": gpu_power,
-                "temp": number(gpu_entry.get("temperature_c")),
-                "fan": number(gpu_entry.get("fan_pct")),
-                "util": number(gpu_entry.get("utilization_pct")),
-            }
-            # The Kryptex app rig has no unit to control: the panel hides the
-            # pause/resume button when controllable is false.
-            record["controllable"] = config.get("control") != "none"
-            # Share throughput rides the same summary as the hashrate: the
-            # broker covers the k3s/host boxes, the ssh paths (the two Windows
-            # rigs) do not report it — 0 there, and the row says so rather
-            # than inventing a rate.
-            record["shareRatePerHour"] = number((summary or {}).get("share_rate_per_hour"))
-            record["lastShareAgeSec"] = number((summary or {}).get("last_share_age_seconds"))
-            record["xmrigHashrate"] = number((summary or {}).get("xmrigHashrate"))
-            record["xmrigShares"] = number((summary or {}).get("xmrigShares"))
-            record["xmrigSharesTotal"] = number((summary or {}).get("xmrigSharesTotal"))
-            record["xmrigAlgo"] = (summary or {}).get("xmrigAlgo", "")
-            record["xmrigPool"] = (summary or {}).get("xmrigPool", "")
-            record["xmrigCpu"] = (summary or {}).get("xmrigCpu", "")
+            # One record builder for every transport (contract §5): the
+            # collector and the ssh probes hand over the same shapes.
+            record = miner_record(host, config, entry, i, summary, reachable,
+                                  paused, host_nvidia, session_text=session_state)
             miners.append(record)
 
-            if online:
+            if record["online"]:
                 online_count += 1
                 host_online += 1
-                gpu_count += len(gpus)
+                summary_gpus = summary.get("gpus") if isinstance(summary, dict) else None
+                gpu_count += len(summary_gpus) if isinstance(summary_gpus, list) else 0
                 host_hashrate += record["hashrate"]
                 host_power += record["power"]
 
-            if paused:
+            if record["paused"]:
                 paused_count += 1
                 host_paused += 1
 
