@@ -32,6 +32,7 @@ Validation checklist for the miners plugin. Run from the plugin root (as
 | G26 | Stop needs confirm | `grep -c 'stopConfirm' MinerRow.qml` — the armed-stop marker | count ≥ 1 |
 | G27 | Keyboard confirm | `grep -c 'cursorConfirmIndex' Panel.qml` — Enter also two-steps a stop | count ≥ 1 |
 | G28 | Dashboard read-only | `poll.py`/`gpu.py` contain no `miner-control` invocation and no kubectl mutation verb | `ok` |
+| G29 | Single pane, no scroll | `Panel.qml`/`MinerRow.qml`/`components/*.qml` contain no `Flickable`/`ScrollBar`/`ScrollView`/`contentY`, and the panel draws one `MinerRow` per entry of the merged `root.rows` list | `ok` |
 
 CONTROL-PATH FAILOVER (2026-09-24): the kubeconfig pins ONE apiserver, so the
 nexus-k3s outage made every panel start/stop fail while the cluster stayed

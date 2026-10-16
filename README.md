@@ -11,28 +11,36 @@ existing installs and pins keep working.
 - **Bar widget**: fleet hashrate plus the number of models currently loaded
   (chip glyph + count). It turns urgent when a GPU runs hot or VRAM is
   nearly full, and the tooltip carries the alert lines.
-- **GPUs**: every card in the fleet — model, utilization, VRAM used/total,
-  power, temperature/fan, clocks — and the workload that owns it (built from
-  nvidia-smi's compute applications plus the fleet's known process set for
-  NVIDIA; amdgpu sysfs plus known workload mapping for AMD). Read-only.
-- **Miners** (existing): per-GPU hashrate, power, temperature, estimated
-  $/day, fleet $/hour · $/day · $/month, with pause/resume. Earnings: PRL
-  coins/day from the Kryptex pool's public rate API × the live PRL price,
-  converted to the configured fiat currency; the krash3 CPU miner's XMR
-  estimate folds into the fleet totals.
-- **Model servers (LLMs)**: llama.cpp / llama-swap / LM Studio (llmster) /
-  ollama endpoints — loaded model, quant, context, slot usage, catalog size,
-  endpoint health.
-- **Image & audio**: ComfyUI (busy/idle + queue depth), voice-models, and
-  yue2 (stated "asleep" while its k3s deployment is scaled to 0).
-- **Transcoding**: Jellyfin on sentry — the number of active
-  jellyfin-ffmpeg transcode processes on the media host.
-- **K8s GPU**: GPU allocatable per node (`nvidia.com/gpu`, `squat.ai/dri`)
-  and the GPU workload pods scheduled on each node.
-- **Models on disk**: GGUF/safetensors/ckpt files per host (`~/models`,
-  `~/StabilityMatrix/Models`, the HuggingFace cache, `/models`), with sizes
-  and which are loaded; VRAM headroom per GPU (used/total per row and in the
-  fleet totals).
+- **One pane, no scrolling**: the panel is a fixed-geometry HUD sized to fit
+  the screen. The fleet runs one miner per GPU, so each row *is* the card and
+  its miner together: state pill · host + GPU · hashrate bar against that
+  model's expected peak (with the TH/s number) · temperature · power · shares
+  per hour (or the age of the last accepted share), plus the pause/resume
+  checkbox. The card's own sensor is used when it is present and reliable;
+  the miner's reading is the fallback.
+- **Summary strip** under the hero: fleet TH/s, the miner counts
+  (ok / paused / down — `down` and a stale poll turn urgent), and the age of
+  the newest poll.
+- **Exceptions first**: rows are ordered so miners that are not mining and
+  cards breaching a threshold sit at the top, then by host. The order is a
+  total sort, so an unchanged poll never reshuffles the rows.
+- **GPU alerts** (heat and VRAM pressure, unreliable sensors excluded) are
+  the exception lines directly under the summary strip, and each row's
+  temperature turns urgent at the alarm threshold.
+- **Collapsed secondary sections**: workloads (LLM · image/audio ·
+  transcode), earnings, k8s GPU, and models-on-disk each cost exactly one
+  line (`9 LLM · 3 media · 1 transcode · 1 down`) and expand on click into
+  their row lists. Read-only.
+- **Earnings**: PRL coins/day from the Kryptex pool's public rate API × the
+  live PRL price, converted to the configured fiat currency; the krash3 CPU
+  miner's XMR estimate folds into the fleet totals.
+- **Workload detail**: model servers carry loaded model, quant, context, slot
+  usage and endpoint health; media rows carry ComfyUI queue depth and the
+  stated `asleep` state for deployments scaled to 0; the transcode row counts
+  active jellyfin-ffmpeg processes on the media host; k8s rows carry GPU
+  allocatable per node and the GPU pods scheduled there; the models-on-disk
+  list carries GGUF/safetensors/ckpt files per host with sizes and loaded
+  flags. VRAM headroom per card is in the row tooltips.
 
 ## Reliability notes
 
@@ -94,9 +102,9 @@ same keyless sources — `crypto.XMR` on `/api/v1/rates` and
 (`monero`) for price and `xmrchain.net/api/networkinfo` chain stats — the
 fixed 0.6 XMR/block tail emission over the network hashrate — for the rate.
 
-The fleet totals (panel hero pills, bar earnings text, tooltip) fold both
-together: all-in $/day = PRL fleet + krash3 XMR. Per-row figures stay
-per-coin; the price caption lists both pool rates.
+The fleet totals (summary strip, collapsed earnings line, bar earnings text,
+tooltip) fold both together: all-in $/day = PRL fleet + krash3 XMR. Per-row
+figures stay per-coin; the price caption lists both pool rates.
 
 ## Security
 
@@ -137,10 +145,14 @@ per-coin; the price caption lists both pool rates.
 ## Architecture
 
 - **`BarWidget.qml`** — Bar entry point, owns the Main data instance
-- **`Panel.qml`** — Panel presentation and keyboard handling
+- **`Panel.qml`** — Panel presentation and keyboard handling (one pane, no
+  scrolling: merged rows, exception-first order, collapsed sections)
 - **`Main.qml`** — Data model, owns the polling process and the revenue fetch
-- **`Model.js`** — Thresholds and the GPU alert rules (heat/VRAM; unreliable
-  sensors excluded)
+- **`MinerRow.qml`** — the merged row: card facts + miner facts + the
+  pause/resume checkbox
+- **`Model.js`** — Thresholds, expected-hashrate baselines, the GPU alert
+  rules (heat/VRAM; unreliable sensors excluded), the miner⇄GPU pairing, and
+  the shared row-facts resolution the rows and the ordering both use
 - **`fleet.py`** — Fleet definition (one source of truth): miners (`FLEET`)
   and the GPU view (`GPU_FLEET`), plus the shared ssh mux options
 - **`poll.py`** — Polls all miners and embeds the GPU view; emits one JSON
@@ -151,9 +163,10 @@ per-coin; the price caption lists both pool rates.
 - **`xmr-revenue`** — Pool rate + XMR price → the krash3 CPU miner's $/day
 - **`miner-control`** — Privileged entry point for miner control (kubectl /
   systemd / NSSM)
-- **`components/`** — `GpuRow`, `WorkloadRow`, `ModelRow`, `SectionLabel`,
-  plus the existing `ErrorBanner` / `StatPill`
-- **`run-gates.sh`** — Plugin gates (G1–G28)
+- **`components/`** — `SummaryStrip`, `CollapseLine`, `WorkloadRow`,
+  `ModelRow`, `SectionLabel`, plus the existing `ErrorBanner` / `StatPill`
+- **`run-gates.sh`** — Plugin gates (G1–G29; G29 locks the single-pane,
+  no-scroll layout)
 
 ### Polling budget
 

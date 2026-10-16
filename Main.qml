@@ -476,7 +476,7 @@ Item {
 
   // ---------------------------------------------------------------- format
   // Formatting lives in util/format.js — these are thin wrappers so existing
-  // bindings in Panel.qml/HostRow.qml/MinerRow.qml keep working.
+  // bindings in Panel.qml/MinerRow.qml keep working.
 
   function formatHashrate(value) { return Format.formatHashrate(value) }
   function formatPower(value) { return Format.formatPower(value) }

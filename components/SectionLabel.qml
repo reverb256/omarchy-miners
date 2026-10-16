@@ -5,7 +5,8 @@ import qs.Commons
 import qs.Ui
 
 // Small-caps section heading with an optional right-aligned value — the same
-// visual language as HostRow's host caption, used between panel sections.
+// visual language as the host captions in the model-on-disk list, used between
+// panel sections.
 Item {
   id: root
 

@@ -207,6 +207,11 @@ VM_METRICS = [
     "miner_gpu_temperature_celsius",
     "miner_gpu_fan_percent",
     "miner_gpu_utilization_percent",
+    # Share throughput, device-level (no gpu label): the panel row shows
+    # shares/hour and falls back to the last-share age, which is how a card
+    # that is hashing but no longer getting work accepted becomes visible.
+    "miner_share_rate_per_hour",
+    "miner_last_share_age_seconds",
 ]
 
 
@@ -275,6 +280,8 @@ def query_vm_summaries():
         summaries[(host, port)] = {
             "hashrate": number(entry["device"].get("miner_hashrate_hs"), gpu_total),
             "power_w": number(entry["device"].get("miner_power_watts")),
+            "share_rate_per_hour": number(entry["device"].get("miner_share_rate_per_hour")),
+            "last_share_age_seconds": number(entry["device"].get("miner_last_share_age_seconds")),
             "gpus": gpus,
         }
     return summaries
@@ -694,6 +701,12 @@ def poll_fleet():
             # The Kryptex app rig has no unit to control: the panel hides the
             # pause/resume button when controllable is false.
             record["controllable"] = config.get("control") != "none"
+            # Share throughput rides the same summary as the hashrate: the
+            # broker covers the k3s/host boxes, the ssh paths (the two Windows
+            # rigs) do not report it — 0 there, and the row says so rather
+            # than inventing a rate.
+            record["shareRatePerHour"] = number((summary or {}).get("share_rate_per_hour"))
+            record["lastShareAgeSec"] = number((summary or {}).get("last_share_age_seconds"))
             record["xmrigHashrate"] = number((summary or {}).get("xmrigHashrate"))
             record["xmrigShares"] = number((summary or {}).get("xmrigShares"))
             record["xmrigSharesTotal"] = number((summary or {}).get("xmrigSharesTotal"))

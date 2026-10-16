@@ -170,3 +170,24 @@ for name in ('poll.py', 'gpu.py'):
             bad.append(name + ':kubectl-mutate')
 print('ok' if not bad else 'FAIL:' + ','.join(bad))
 PY
+
+# G29: the panel is ONE pane that fits the screen — no Flickable, no scrollbar,
+# and one row per configured miner drawn from the merged rows list. Regression
+# lock: the panel used to stack a per-GPU list on top of a per-miner list and
+# needed a Flickable+ScrollBar to be readable at all.
+printf 'G29 single pane, no scroll: '
+python3 - <<'PY'
+import glob
+bad = []
+for path in ['Panel.qml', 'MinerRow.qml', 'BarWidget.qml'] + sorted(glob.glob('components/*.qml')):
+    # Comments may discuss the old scrolling design; only real code counts.
+    lines = [line.split('//')[0] for line in open(path).read().splitlines()]
+    source = '\n'.join(lines)
+    for token in ('Flickable', 'ScrollBar', 'ScrollView', 'contentY', 'flickableDirection'):
+        if token in source:
+            bad.append(path + ':' + token)
+panel = open('Panel.qml').read()
+if 'model: root.rows' not in panel or 'MinerRow {' not in panel:
+    bad.append('panel:not-one-row-per-miner')
+print('ok' if not bad else 'FAIL:' + ','.join(bad))
+PY
