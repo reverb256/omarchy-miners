@@ -631,6 +631,7 @@ Panel {
               urgent: root.urgent
               fontFamily: root.fontFamily
               busy: root.aiBusy(modelData ? modelData.id : "")
+              pendingText: root.fleet ? root.fleet.aiPending(modelData ? modelData.id : "") : ""
               onToggleRequested: if (root.fleet && modelData) root.fleet.aiToggle(modelData)
               onSwitchRequested: if (root.fleet && aiRow.switchTo)
                 root.fleet.aiSwitch(modelData, aiRow.switchTo)

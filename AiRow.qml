@@ -33,6 +33,8 @@ Item {
   property color urgent: Color.urgent
   property string fontFamily: Style.font.family
   property bool busy: false
+  // What the in-flight action is ("Stopping…"), so the row can say it.
+  property string pendingText: ""
 
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string stateLabel: Model.aiStateLabel(root.workload)
@@ -147,8 +149,8 @@ Item {
         width: Math.max(0, parent.width - Style.space(8))
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
-        text: root.stateLabel
-        color: root.stateColor
+        text: root.busy && root.pendingText !== "" ? root.pendingText : root.stateLabel
+        color: root.busy && root.pendingText !== "" ? root.dim : root.stateColor
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: root.online
@@ -200,7 +202,7 @@ Item {
             id: chipText
             anchors.centerIn: parent
             text: root.busy
-              ? "…"
+              ? (root.pendingText !== "" ? root.pendingText : "…")
               : (root.switchConfirm
                 ? "switch?"
                 : "→ " + Model.switchLabel(root.switchTo))

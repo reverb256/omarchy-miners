@@ -67,6 +67,10 @@ Item {
   property var busyUnits: ({})
   property int busyRevision: 0
 
+  // Human text for the action each busy key is running ("Stopping…"), so a
+  // row can say WHAT is happening instead of a bare pending mark.
+  property var pendingActions: ({})
+
   readonly property bool anyOnline: onlineCount > 0
   readonly property string pluginDir:
     Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
@@ -89,6 +93,26 @@ Item {
     else delete next[String(unit)]
     busyUnits = next
     busyRevision++
+  }
+
+  function setPending(keys, text) {
+    var next = ({})
+    for (var key in pendingActions) next[key] = pendingActions[key]
+    for (var i = 0; i < keys.length; i++) next[String(keys[i])] = text
+    pendingActions = next
+    busyRevision++
+  }
+
+  function clearPending(keys) {
+    var next = ({})
+    for (var key in pendingActions) next[key] = pendingActions[key]
+    for (var i = 0; i < keys.length; i++) delete next[String(keys[i])]
+    pendingActions = next
+    busyRevision++
+  }
+
+  function aiPending(id) {
+    return String(pendingActions["ai:" + String(id)] || "")
   }
 
   // ------------------------------------------------------------------ poll
@@ -425,6 +449,7 @@ Item {
       onExited: function(exitCode) {
         for (var k = 0; k < action.busyKeys.length; k++)
           root.markBusy(action.busyKeys[k], false)
+        root.clearPending(action.busyKeys)
 
         var message = ""
         try {
@@ -437,9 +462,11 @@ Item {
         if (exitCode !== 0 && message === "") message = "Exit " + exitCode
         if (message !== "") root.actionFailed(action.label + ": " + message)
 
-        // A stop or start changes what the next poll should say, and the miner
-        // needs a moment to settle before it reports it.
+        // A stop or start changes what the next poll should say: refresh as
+        // soon as the helper exits (the k8s spec is already written), then
+        // once more to catch slow pod transitions.
         settleTimer.start()
+        settleAgain.restart()
         action.destroy()
       }
     }
@@ -447,7 +474,16 @@ Item {
 
   Timer {
     id: settleTimer
-    interval: 1200
+    interval: 700
+    repeat: false
+    onTriggered: root.refresh()
+  }
+
+  // The second pass: a pod can take a few seconds to leave or become ready,
+  // and the row must not look frozen in between.
+  Timer {
+    id: settleAgain
+    interval: 4000
     repeat: false
     onTriggered: root.refresh()
   }
@@ -495,6 +531,8 @@ Item {
     for (var i = 0; i < targets.length; i++) keys.push("ai:" + String(targets[i].id))
     for (var k = 0; k < keys.length; k++) if (isBusy(keys[k])) return
     for (var m = 0; m < keys.length; m++) markBusy(keys[m], true)
+    setPending(keys, ({ stop: "Stopping…", start: "Starting…", restart: "Restarting…",
+                        switch: "Switching…" })[action] || String(action))
     var process = actionComponent.createObject(root, {
       busyKeys: keys,
       label: String(row.host) + " " + String(row.id),
